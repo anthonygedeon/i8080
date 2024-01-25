@@ -4,6 +4,7 @@ project(i8080)
 # Create an option to switch between a system sdl library and a vendored sdl library
 option(MYGAME_VENDORED "Use vendored libraries" OFF)
 
+set(CMAKE_CXX_FLAGS "-DTST8080")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(MYGAME_VENDORED)
