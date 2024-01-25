@@ -1,25 +1,17 @@
 #include <stdio.h>
-#include <errno.h>
+// #include <errno.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
 
 #define ARRAY_LENGTH(x) (sizeof(x) / sizeof(x[0]))
-#define MAX_MEMORY 0xFFFF
 
-uint8_t memory[MAX_MEMORY];
+#define ROM_ADDRESS  0x0000 
+#define WRAM_ADDRESS 0x2000
+#define VRAM_ADDRESS 0x2400
 
-void memory_write(uint8_t memory[], size_t size, const uint8_t *data) {
-	if (memory == NULL) {
-		printf("Error: invalid pointer");
-	}
-	
-	for (size_t i = 0; i < size;  i++) {
-		memory[i] = data[i];
-	}
-
-}
+#define MAX_MEMORY 0x10000
 
 long fsize(FILE *file) {
 	fseek(file, 0, SEEK_END);
@@ -1081,21 +1073,45 @@ int main(int argc, char *argv[]) {
 	const size_t count = fread(bytes, sizeof(bytes[0]), size, fp);
 
 	if (count == size) {
-		memory_write(memory, ARRAY_LENGTH(bytes), bytes);
+		load_memory(&cpu.mem, ARRAY_LENGTH(bytes), bytes);
 	} else {
 		if (feof(fp)) {
 			printf("Error reading %s: unexpected eof\n", rom);
 		}
 	}
 
-	uint16_t pc = 0;
+	// if (strcmp(argv[1], "-d") == 0) {
+	// 	for (int i = 0; i < size; i++) {
+	// 		disassemble(memory, &pc);
+	// 	}
+	// }
+	
+	uint16_t i = 0;
+	while (true) {
+		fetch(&cpu);
+		
+		// decode(&cpu);
 
-	if (strcmp(argv[1], "-d") == 0) {
-		for (int i = 0; i < size; i++) {
-			disassemble(memory, &pc);
+		execute(&cpu);
+
+#ifndef TST8080
+		 if (cpu.reg.pc == 5) {
+			if (cpu.reg.c == 2) {
+				printf("%c", cpu.reg.e);
+			} else if (cpu.reg.c == 9) {
+				uint16_t de = (cpu.reg.d << 8) | cpu.reg.e;
+				i = de;
+				while (cpu.mem.ram[i] != '$') {
+					  printf("%c", cpu.mem.ram[i]);
+					  i++;
+				}
+			}
 		}
-	}
+#endif
 
+
+	}
+	
 	fclose(fp);
 
 	return EXIT_SUCCESS;
