@@ -155,7 +155,6 @@ void execute(Cpu *cpu) {
 
 	cpu->reg.pc++;
 
-
 	switch(cpu->opcode) {
 		case 0x00: break;
 		case 0x01:
@@ -616,7 +615,12 @@ void execute(Cpu *cpu) {
 			cpu->reg.sp += 2;
 			break;
 		case 0xCA:
-			unimplemented();break;
+			if (cpu->flag.zero) {
+				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			} else {
+				cpu->reg.pc += 2;
+			}
+			break;
 		case 0xCB:
 			unimplemented();break;
 		case 0xCC:
@@ -637,11 +641,18 @@ void execute(Cpu *cpu) {
 		case 0xD0:
 			unimplemented();break;
 		case 0xD1:
-			unimplemented();break;
+			cpu->reg.d = cpu->mem.ram[cpu->reg.sp + 1];
+			cpu->reg.e = cpu->mem.ram[cpu->reg.sp];			
+			cpu->reg.sp += 2;
+			break;
 		case 0xD2:
-			unimplemented();break;
+			if (cpu->flag.carry == 0) {
+				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			} else {
+				cpu->reg.pc += 2;
+			}
+			break;
 		case 0xD3:
-			exit(1);
 			cpu->reg.pc++;
 			break;
 		case 0xD4:
@@ -660,7 +671,12 @@ void execute(Cpu *cpu) {
 		case 0xD9:
 			unimplemented();break;
 		case 0xDA:
-			unimplemented();break;
+			if (cpu->flag.carry) {
+				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			} else {
+				cpu->reg.pc += 2;
+			}
+			break;
 		case 0xDB:
 			unimplemented();break;
 		case 0xDC:
@@ -679,7 +695,12 @@ void execute(Cpu *cpu) {
 			cpu->reg.sp += 2;
 			break;
 		case 0xE2:
-			unimplemented();break;
+			if (cpu->flag.parity == 0) {
+				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			} else {
+				cpu->reg.pc += 2;
+			}
+			break;
 		case 0xE3:
 			unimplemented();break;
 		case 0xE4:
@@ -689,8 +710,15 @@ void execute(Cpu *cpu) {
 			cpu->mem.ram[cpu->reg.sp-2] = cpu->reg.l;
 			cpu->reg.sp -= 2;
 			break;
-		case 0xE6:
-			unimplemented();break;
+		case 0xE6: {
+			uint8_t res = cpu->reg.a & cpu->mem.ram[cpu->reg.pc];
+			cpu->flag.sign = check_sign(res);
+			cpu->flag.zero = check_zero(res);
+			cpu->flag.parity = check_parity(res);
+			cpu->flag.carry = 0;
+			cpu->reg.pc++;
+			break;
+		}
 		case 0xE7:
 			unimplemented();break;
 		case 0xE8:
@@ -698,7 +726,12 @@ void execute(Cpu *cpu) {
 		case 0xE9:
 			unimplemented();break;
 		case 0xEA:
-			unimplemented();break;
+			if (cpu->flag.parity) {
+				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			} else {
+				cpu->reg.pc += 2;
+			}
+			break;
 		case 0xEB: {
 			uint8_t tmp1 = cpu->reg.h;
 			uint8_t tmp2 = cpu->reg.l;
@@ -721,7 +754,12 @@ void execute(Cpu *cpu) {
 		case 0xF1:
 			unimplemented();break;
 		case 0xF2:
-			unimplemented();break;
+			if (cpu->flag.sign == 0) {
+				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			} else {
+				cpu->reg.pc += 2;
+			}
+			break;
 		case 0xF3:
 			unimplemented();break;
 		case 0xF4:
@@ -737,7 +775,12 @@ void execute(Cpu *cpu) {
 		case 0xF9:
 			unimplemented();break;
 		case 0xFA:
-			unimplemented();break;
+			if (cpu->flag.sign) {
+				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			} else {
+				cpu->reg.pc += 2;
+			}
+			break;
 		case 0xFB:
 			unimplemented();break;
 		case 0xFC:
@@ -791,6 +834,13 @@ int main(int argc, char *argv[]) {
 	// 	}
 	// }
 	
+	cpu.mem.ram[0x0000] = 0xD3;
+	cpu.mem.ram[0x0001] = 0x00;
+	
+	cpu.mem.ram[0x0005] = 0xD3;
+	cpu.mem.ram[0x0006] = 0x01;
+	cpu.mem.ram[0x0007] = 0xC9;
+
 	uint16_t i = 0;
 	while (true) {
 		fetch(&cpu);
@@ -813,7 +863,6 @@ int main(int argc, char *argv[]) {
 			}
 		}
 #endif
-
 
 	}
 	
