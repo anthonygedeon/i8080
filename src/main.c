@@ -5,9 +5,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#include "common.h"
 #include "disassembler.h"
-
-#define ARRAY_LENGTH(x) (sizeof(x) / sizeof(x[0]))
 
 #define ROM_ADDRESS  0x0000 
 #define WRAM_ADDRESS 0x2000
@@ -107,8 +106,6 @@ Cpu cpu_new(void) {
 	return cpu;
 }
 
-// int load_rom(const char *rom) {}
-
 void unimplemented(void) {
 	printf("instruction not implemented");
 	exit(1);
@@ -118,14 +115,11 @@ void fetch(Cpu *cpu) {
 	cpu->opcode = cpu->mem.ram[cpu->reg.pc];
 }
 
-// TODO: I would like to create a fetch-decode-execute cycle
-// void decode(Cpu *cpu) {}
-
 uint8_t check_parity(const uint8_t byte) {
 	uint8_t count;
 
 	for (int i = 0; i < 8; i++) {
-		if (((byte >> i) & 0x1U) == 1) {
+		if (((byte >> i) & 0x1) == 1) {
 			count++;
 		}
 	}
@@ -139,6 +133,74 @@ uint8_t check_zero(const uint8_t byte) {
 
 uint8_t check_sign(const uint8_t byte) {
 	return (byte & 0x80) == 0x80;
+}
+
+void cpu_set_zsp(Cpu *cpu, uint8_t result) {
+	cpu->flag.zero = check_zero(result);
+	cpu->flag.sign = check_sign(result);
+	cpu->flag.parity = check_parity(result);
+}
+
+void cpu_sbb(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a - (reg + cpu->flag.carry);
+	cpu_set_zsp(cpu, res);
+	cpu->flag.carry = ((((uint16_t)cpu->reg.a & 0xFF) 
+		+ ((~((uint16_t)reg + cpu->flag.carry) + 1) & 0xFF)) >> 8) == 0;
+	cpu->flag.aux = ((cpu->reg.a & 0x0F) + ((~reg + cpu->flag.carry & 0x0F)) & 0xF0) != 0;
+	cpu->reg.a = res;
+}
+
+void cpu_ana(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a & reg;
+	cpu_set_zsp(cpu, res);
+	cpu->flag.carry = 0;	
+	cpu->flag.aux = ((cpu->reg.a | reg) & 0x8) != 0;
+	cpu->reg.a = res;
+}
+
+void cpu_ora(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a | reg;
+	cpu_set_zsp(cpu, res);
+	cpu->flag.carry = 0;	
+	cpu->flag.aux = 0; 
+	cpu->reg.a = res;
+}
+
+void cpu_sub(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a - reg; 
+	cpu_set_zsp(cpu, res);
+	cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~reg + 1) >> 8);
+	cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~reg & 0x0F) + 1)) & 0x10) == 0x10;
+	cpu->reg.a = res;
+}
+
+void cpu_xra(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a ^ reg;
+	cpu_set_zsp(cpu, res);
+	cpu->flag.carry = 0;
+	cpu->flag.aux = 0;
+	cpu->reg.a = res;
+}
+
+void cpu_cmp(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a - reg;
+	cpu_set_zsp(cpu, res);
+	cpu->flag.carry = cpu->reg.a < reg; 
+	cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~reg & 0x0F) + 1)) & 0x10) == 0x10;
+}
+
+void cpu_add(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a + reg;
+	cpu_set_zsp(cpu, res);
+	cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(reg) > 0xFF;
+	cpu->flag.aux =  ((cpu->reg.a & 0xF) + (reg & 0xF)) > 0xF;
+	cpu->reg.a = res;
+}
+
+void cpu_adc(Cpu *cpu, uint8_t reg) {
+	uint8_t res = cpu->reg.a + cpu->reg.a + cpu->flag.carry;
+	cpu_set_zsp(cpu, res);
+	cpu_add(cpu, reg);
 }
 
 void execute(Cpu *cpu) {
@@ -177,6 +239,7 @@ void execute(Cpu *cpu) {
 	}
 	printf("]}\n");
 
+
 	cpu->reg.pc++;
 
 	switch(cpu->opcode) {
@@ -186,12 +249,13 @@ void execute(Cpu *cpu) {
 			cpu->reg.c = cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc += 2;
 			break;
-		case 0x02:; 
-			// uint16_t address = cpu->reg.c | (cpu->reg.b << 8);
-			// cpu->mem.ram[address] = cpu->reg.a;
-			unimplemented();break;
-		case 0x03:
-			unimplemented();break;
+		case 0x02: cpu->mem.ram[bc] = cpu->reg.a; break;
+		case 0x03: {
+			bc += 1;
+			cpu->reg.b = bc >> 8;
+			cpu->reg.c = bc & 0x00FF;
+			break;
+		}
 		case 0x04:
 			cpu->reg.b++;
 			cpu->flag.sign = check_sign(cpu->reg.b);
@@ -217,12 +281,19 @@ void execute(Cpu *cpu) {
 			unimplemented();break;
 		case 0x08:
 			unimplemented();break;
-		case 0x09:
-			unimplemented();break;
-		case 0x0A:
-			unimplemented();break;
+		case 0x09: {
+			uint32_t res = bc + hl;
+			cpu->reg.h = res >> 8;
+			cpu->reg.l = (res & 0x00FF);
+			cpu->flag.carry = (res & 0xFFFF0000) != 0;
+			break;
+		}
+		case 0x0A: cpu->reg.a = cpu->mem.ram[bc]; break;
 		case 0x0B:
-			unimplemented();break;
+			bc -= 1;
+			cpu->reg.b = bc >> 8;
+			cpu->reg.c = bc & 0x00FF;
+			break;
 		case 0x0C:
 			cpu->reg.c++;
 			cpu->flag.sign = check_sign(cpu->reg.c);
@@ -250,8 +321,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.e = cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc += 2;
 			break;
-		case 0x12:
-			unimplemented();break;
+		case 0x12: cpu->mem.ram[de] = cpu->reg.a; break;
 		case 0x13:
 			de += 1;
 			cpu->reg.d = de >> 8;
@@ -290,7 +360,10 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = cpu->mem.ram[(cpu->reg.d << 8) | cpu->reg.e];
 			break;
 		case 0x1B:
-			unimplemented();break;
+			de -= 1;
+			cpu->reg.d = de >> 8;
+			cpu->reg.e = de & 0x00FF;
+			break;
 		case 0x1C:
 			cpu->reg.e++;
 			cpu->flag.sign = check_sign(cpu->reg.e);
@@ -318,8 +391,13 @@ void execute(Cpu *cpu) {
 			cpu->reg.l = cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc += 2;
 			break;
-		case 0x22:
-			unimplemented();break;
+		case 0x22: {
+			uint16_t addr = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			cpu->mem.ram[addr+1] = cpu->reg.h;
+			cpu->mem.ram[addr] = cpu->reg.l;
+			cpu->reg.pc += 2;
+			break;
+		}
 		case 0x23:
 			hl += 1;
 			cpu->reg.h = hl >> 8;
@@ -354,10 +432,19 @@ void execute(Cpu *cpu) {
 			cpu->flag.carry = (res & 0xFFFF0000) != 0;
 			break;
 		}
-		case 0x2A:
-			unimplemented();break;
+		case 0x2A: {
+
+			uint16_t addr = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			cpu->reg.h = cpu->mem.ram[addr+1];
+			cpu->reg.l = cpu->mem.ram[addr];
+			cpu->reg.pc += 2;
+			break;
+				   }
 		case 0x2B:
-			unimplemented();break;
+			hl -= 1;
+			cpu->reg.h = hl >> 8;
+			cpu->reg.l = hl & 0x00FF;
+			break;
 		case 0x2C:
 			cpu->reg.l++;
 			cpu->flag.sign = check_sign(cpu->reg.l);
@@ -376,8 +463,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.l = cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc++;
 			break;
-		case 0x2F:
-			unimplemented();break;
+		case 0x2F: cpu->reg.a = ~cpu->reg.a; break;
 		case 0x30:
 			unimplemented();break;
 		case 0x31:
@@ -385,25 +471,36 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc += 2;
 			break;
 		case 0x32:
-			unimplemented();break;
+			cpu->mem.ram[(cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc]] = cpu->reg.a;
+			cpu->reg.pc += 2;
+			break;
 		case 0x33:
 			unimplemented();break;
 		case 0x34:
-			unimplemented();break;
+			cpu->mem.ram[hl]++;
+			cpu_set_zsp(cpu, cpu->mem.ram[hl]);
+			cpu->flag.aux = ((cpu->mem.ram[hl] & 0xF) + 1) > 0xF;
+			break;
 		case 0x35:
-			unimplemented();break;
+			cpu->mem.ram[hl]--;
+			cpu_set_zsp(cpu, cpu->mem.ram[hl]);
+			cpu->flag.aux = (((cpu->mem.ram[hl]  & 0x0F) + ((~0x01 & 0x0F) + 1)) & 0x10) == 0x10;
+			break;
 		case 0x36:
 			cpu->mem.ram[hl] = cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc++;
 			break;
-		case 0x37:
-			unimplemented();break;
+		case 0x37: cpu->flag.carry = 1; break;
 		case 0x38:
 			unimplemented();break;
 		case 0x39:
 			unimplemented();break;
-		case 0x3A:
-			unimplemented();break;
+		case 0x3A: {
+			uint16_t addr = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
+			cpu->reg.a = cpu->mem.ram[addr]; 
+			cpu->reg.pc += 2;
+			break;
+		}
 		case 0x3B:
 			unimplemented();break;
 		case 0x3C:
@@ -424,8 +521,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc++;
 			break;
-		case 0x3F:
-			unimplemented();break;
+		case 0x3F: cpu->flag.carry = !cpu->flag.carry; break;
 		case 0x40:
 			cpu->reg.b = cpu->reg.b;
 			break;
@@ -617,313 +713,75 @@ void execute(Cpu *cpu) {
 		case 0x7F:
 			cpu->reg.a = cpu->reg.a;
 			break;
-		case 0x80: {
-			uint8_t res = cpu->reg.a + cpu->reg.b;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.b) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.b & 0xF)) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-			break;
-		case 0x81: {
-			uint8_t res = cpu->reg.a + cpu->reg.c;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.c) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.c & 0xF)) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x82: {
-			uint8_t res = cpu->reg.a + cpu->reg.d;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.d) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.d & 0xF)) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x83: {
-			uint8_t res = cpu->reg.a + cpu->reg.e;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.e) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.e & 0xF)) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x84: {
-			uint8_t res = cpu->reg.a + cpu->reg.h;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.h) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.h & 0xF)) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x85:{
-			uint8_t res = cpu->reg.a + cpu->reg.l;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.l) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.l & 0xF)) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x86: unimplemented();break;
-		case 0x87:{
-			uint8_t res = cpu->reg.a + cpu->reg.a;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.a) > 0xFF;
-			cpu->flag.aux = ((cpu->reg.a & 0xF) + (cpu->reg.a & 0xF)) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x88:{
-			uint8_t res = cpu->reg.a + cpu->reg.b + cpu->flag.carry;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.b)  > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.b & 0xF) ) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x89: {
-			uint8_t res = cpu->reg.a + cpu->reg.c + cpu->flag.carry;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.c)  > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.c & 0xF) ) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x8A: {
-			uint8_t res = cpu->reg.a + cpu->reg.d + cpu->flag.carry;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.d)  > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.d & 0xF) ) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x8B: {
-			uint8_t res = cpu->reg.a + cpu->reg.e + cpu->flag.carry;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.e)  > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.e & 0xF) ) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x8C: {
-			uint8_t res = cpu->reg.a + cpu->reg.h + cpu->flag.carry;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.h) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.h & 0xF) ) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x8D: {
-			uint8_t res = cpu->reg.a + cpu->reg.l + cpu->flag.carry;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.l) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.l & 0xF) ) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x8E:
-			unimplemented();break;
-		case 0x8F: {
-			uint8_t res = cpu->reg.a + cpu->reg.a + cpu->flag.carry;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->reg.a) > 0xFF;
-			cpu->flag.aux =  ((cpu->reg.a & 0xF) + (cpu->reg.a & 0xF) ) > 0xF;
-			cpu->reg.a = res;
-			break;
-		}
 
-		case 0x90: {
-			uint8_t res = cpu->reg.a - cpu->reg.b;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~cpu->reg.b + 1) >> 8);
-			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->reg.b & 0x0F) + 1)) & 0x10) == 0x10;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x91: {
-			uint8_t res = cpu->reg.a - cpu->reg.c;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~cpu->reg.c + 1) >> 8);
-			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->reg.c & 0x0F) + 1)) & 0x10) == 0x10;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x92: {
-			uint8_t res = cpu->reg.a - cpu->reg.d;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~cpu->reg.d + 1) >> 8);
-			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->reg.d & 0x0F) + 1)) & 0x10) == 0x10;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x93: {
-			uint8_t res = cpu->reg.a - cpu->reg.e;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~cpu->reg.e + 1) >> 8);
-			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->reg.e & 0x0F) + 1)) & 0x10) == 0x10;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x94: {
-			uint8_t res = cpu->reg.a - cpu->reg.h;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~cpu->reg.h + 1) >> 8);
-			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->reg.h & 0x0F) + 1)) & 0x10) == 0x10;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x95:{
-			uint8_t res = cpu->reg.a - cpu->reg.l;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~cpu->reg.l + 1) >> 8);
-			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->reg.l & 0x0F) + 1)) & 0x10) == 0x10;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x96:
-			unimplemented();break;
-		case 0x97: {
-			uint8_t res = cpu->reg.a - cpu->reg.a;
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = !(((uint16_t)cpu->reg.a + (uint16_t)~cpu->reg.a + 1) >> 8);
-			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->reg.a & 0x0F) + 1)) & 0x10) == 0x10;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0x98: {
+		case 0x80: cpu_add(cpu, cpu->reg.b); break;
+		case 0x81: cpu_add(cpu, cpu->reg.c); break;
+		case 0x82: cpu_add(cpu, cpu->reg.d); break;
+		case 0x83: cpu_add(cpu, cpu->reg.e); break;
+		case 0x84: cpu_add(cpu, cpu->reg.h); break;
+		case 0x85: cpu_add(cpu, cpu->reg.l); break;
+		case 0x86: cpu_add(cpu, cpu->mem.ram[hl]); break;
+		case 0x87: cpu_add(cpu, cpu->reg.a); break;
+		case 0x88: cpu_adc(cpu, cpu->reg.b + cpu->flag.carry); break;
+		case 0x89: cpu_adc(cpu, cpu->reg.c + cpu->flag.carry); break;
+		case 0x8A: cpu_adc(cpu, cpu->reg.d + cpu->flag.carry); break;
+		case 0x8B: cpu_adc(cpu, cpu->reg.e + cpu->flag.carry); break;
+		case 0x8C: cpu_adc(cpu, cpu->reg.h + cpu->flag.carry); break;
+		case 0x8D: cpu_adc(cpu, cpu->reg.l + cpu->flag.carry); break;
+		case 0x8E: cpu_adc(cpu, cpu->mem.ram[hl] + cpu->flag.carry); break;
+		case 0x8F: cpu_adc(cpu, cpu->reg.a + cpu->flag.carry); break;
 
-			break;
-		}
-		case 0x99:
-			unimplemented();break;
-		case 0x9A:
-			unimplemented();break;
-		case 0x9B:
-			unimplemented();break;
-		case 0x9C:
-			unimplemented();break;
-		case 0x9D:
-			unimplemented();break;
-		case 0x9E:
-			unimplemented();break;
-		case 0x9F:
-			unimplemented();break;
-		case 0xA0:
-			unimplemented();break;
-		case 0xA1:
-			unimplemented();break;
-		case 0xA2:
-			unimplemented();break;
-		case 0xA3:
-			unimplemented();break;
-		case 0xA4:
-			unimplemented();break;
-		case 0xA5:
-			unimplemented();break;
-		case 0xA6:
-			unimplemented();break;
-		case 0xA7:
-			unimplemented();break;
-		case 0xA8:
-			unimplemented();break;
-		case 0xA9:
-			unimplemented();break;
-		case 0xAA:
-			unimplemented();break;
-		case 0xAB:
-			unimplemented();break;
-		case 0xAC:
-			unimplemented();break;
-		case 0xAD:
-			unimplemented();break;
-		case 0xAE:
-			unimplemented();break;
-		case 0xAF: {
-			uint8_t res = cpu->reg.a ^ cpu->reg.a; 
-			cpu->flag.sign = check_sign(res);
-			cpu->flag.zero = check_zero(res);
-			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = 0;
-			cpu->flag.aux = 0;
-			cpu->reg.a = res;
-			break;
-		}
-		case 0xB0:
-			unimplemented();break;
-		case 0xB1:
-			unimplemented();break;
-		case 0xB2:
-			unimplemented();break;
-		case 0xB3:
-			unimplemented();break;
-		case 0xB4:
-			unimplemented();break;
-		case 0xB5:
-			unimplemented();break;
-		case 0xB6:
-			unimplemented();break;
-		case 0xB7:
-			unimplemented();break;
-		case 0xB8:
-			unimplemented();break;
-		case 0xB9:
-			unimplemented();break;
-		case 0xBA:
-			unimplemented();break;
-		case 0xBB:
-			unimplemented();break;
-		case 0xBC:
-			unimplemented();break;
-		case 0xBD:
-			unimplemented();break;
-		case 0xBE:
-			unimplemented();break;
-		case 0xBF:
-			unimplemented();break;
+		case 0x90: cpu_sub(cpu, cpu->reg.b); break;
+		case 0x91: cpu_sub(cpu, cpu->reg.c); break;
+		case 0x92: cpu_sub(cpu, cpu->reg.d); break;
+		case 0x93: cpu_sub(cpu, cpu->reg.e); break;
+		case 0x94: cpu_sub(cpu, cpu->reg.h); break;
+		case 0x95: cpu_sub(cpu, cpu->reg.l); break;
+		case 0x96: cpu_sub(cpu, cpu->mem.ram[hl]); break;
+		case 0x97: cpu_sub(cpu, cpu->reg.a); break;
+		case 0x98: cpu_sbb(cpu, cpu->reg.b); break;
+		case 0x99: cpu_sbb(cpu, cpu->reg.c); break;
+		case 0x9A: cpu_sbb(cpu, cpu->reg.d); break;
+		case 0x9B: cpu_sbb(cpu, cpu->reg.e); break;
+		case 0x9C: cpu_sbb(cpu, cpu->reg.h); break;
+		case 0x9D: cpu_sbb(cpu, cpu->reg.l); break;
+		case 0x9E: cpu_sbb(cpu, cpu->mem.ram[hl]); break;	
+		case 0x9F: cpu_sbb(cpu, cpu->reg.a); break;
+		
+		case 0xA0: cpu_ana(cpu, cpu->reg.b); break;
+		case 0xA1: cpu_ana(cpu, cpu->reg.c); break;
+		case 0xA2: cpu_ana(cpu, cpu->reg.d); break;
+		case 0xA3: cpu_ana(cpu, cpu->reg.e); break;
+		case 0xA4: cpu_ana(cpu, cpu->reg.h); break;
+		case 0xA5: cpu_ana(cpu, cpu->reg.l); break;
+		case 0xA6: cpu_ana(cpu, cpu->mem.ram[hl]); break;
+		case 0xA7: cpu_ana(cpu, cpu->reg.a); break;
+		case 0xA8: cpu_xra(cpu, cpu->reg.b); break;
+		case 0xA9: cpu_xra(cpu, cpu->reg.c); break;
+		case 0xAA: cpu_xra(cpu, cpu->reg.d); break;
+		case 0xAB: cpu_xra(cpu, cpu->reg.e); break;
+		case 0xAC: cpu_xra(cpu, cpu->reg.h); break;
+		case 0xAD: cpu_xra(cpu, cpu->reg.l); break;
+		case 0xAE: cpu_xra(cpu, cpu->mem.ram[hl]); break;
+		case 0xAF: cpu_xra(cpu, cpu->reg.a); break;
+
+		case 0xB0: cpu_ora(cpu, cpu->reg.b); break;
+		case 0xB1: cpu_ora(cpu, cpu->reg.c); break;
+		case 0xB2: cpu_ora(cpu, cpu->reg.d); break;
+		case 0xB3: cpu_ora(cpu, cpu->reg.e); break;
+		case 0xB4: cpu_ora(cpu, cpu->reg.h); break;
+		case 0xB5: cpu_ora(cpu, cpu->reg.l); break;
+		case 0xB6: cpu_ora(cpu, cpu->mem.ram[hl]); break;
+		case 0xB7: cpu_ora(cpu, cpu->reg.a); break;
+		case 0xB8: cpu_cmp(cpu, cpu->reg.b); break;
+		case 0xB9: cpu_cmp(cpu, cpu->reg.c); break;
+		case 0xBA: cpu_cmp(cpu, cpu->reg.d); break;
+		case 0xBB: cpu_cmp(cpu, cpu->reg.e); break;
+		case 0xBC: cpu_cmp(cpu, cpu->reg.h); break;
+		case 0xBD: cpu_cmp(cpu, cpu->reg.l); break;
+		case 0xBE: cpu_cmp(cpu, cpu->mem.ram[hl]); break;
+		case 0xBF: cpu_cmp(cpu, cpu->reg.a); break;
+
 		case 0xC0:
 			if (!cpu->flag.zero) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1155,6 +1013,7 @@ void execute(Cpu *cpu) {
 			cpu->flag.zero = check_zero(res);
 			cpu->flag.parity = check_parity(res);
 			cpu->flag.carry = 0;
+			// The 8080 AND instructions set `ac` to reflect the OR of bit 3 of the operands involved 
 			cpu->flag.aux = ((cpu->reg.a | cpu->mem.ram[cpu->reg.pc]) & 0x80) != 0;
 			cpu->reg.a = res;
 			cpu->reg.pc++;
@@ -1318,7 +1177,7 @@ int main(int argc, char *argv[]) {
 	const size_t count = fread(bytes, sizeof(bytes[0]), size, fp);
 
 	if (count == size) {
-		load_memory(&cpu.mem, ARRAY_LENGTH(bytes), bytes);
+		load_memory(&cpu.mem, ARRAY_SIZE(bytes), bytes);
 	} else {
 		if (feof(fp)) {
 			printf("Error reading %s: unexpected eof\n", rom);
