@@ -14,6 +14,8 @@
 
 #define MAX_MEMORY 0x10000
 
+#define MAX_PORTS 255
+
 long fsize(FILE *file) {
 	fseek(file, 0, SEEK_END);
 	long size = ftell(file);
@@ -29,7 +31,8 @@ typedef struct Memory {
 
 void load_memory(struct Memory *memory, size_t size, const uint8_t *data) {
 	for (size_t i = ROM_ADDRESS; i < size;  i++) {
-		memory->ram[i+0x100] = data[i];
+		// memory->ram[i+0x100] = data[i];
+		memory->ram[i] = data[i];
 	}
 }
 
@@ -57,23 +60,30 @@ typedef struct ConditionFlag {
 typedef struct Cpu {
 	int			  cyc;
 	uint8_t       opcode;
+	
+	uint8_t		  in[MAX_PORTS];
+	uint8_t		  out[MAX_PORTS];
+
 	Memory		  mem;
 	Register	  reg;	
 	ConditionFlag flag;
+	bool		  interrupt;
 } Cpu;
 
 Cpu cpu_new(void) {
 	Cpu cpu;
 	
 	memset(cpu.mem.ram, 0, MAX_MEMORY);
+	memset(cpu.in, 0, MAX_PORTS);
+	memset(cpu.out, 0, MAX_PORTS);
 	// cpu.mem.write
 		
 	cpu.cyc = 0;
 	cpu.opcode = 0;
 	cpu.reg.pc = 0;
-#ifndef TST8080
-	cpu.reg.pc = 0x100;
-#endif
+// #ifndef TST8080
+// 	cpu.reg.pc = 0x100;
+// #endif
 	cpu.reg.sp = 0;
 
 	cpu.reg.a = 0;
@@ -213,25 +223,24 @@ void debug_output(Cpu *cpu, uint16_t bc, uint16_t de, uint16_t hl) {
 	f |= cpu->flag.carry << 0;
 
 	// printf("PC: %.4X, AF: %04X, BC: %.4X, DE: %.4X, HL: %.4X, SP: %.4X, CYC: %d     (%02X %02X %02X %02X)", 
-	// 		cpu->reg.pc, cpu->reg.a << 8 | cpu->reg.psw, bc, de, hl, cpu->reg.sp, cpu->cyc, cpu->mem.ram[cpu->reg.pc], cpu->mem.ram[cpu->reg.pc+1], cpu->mem.ram[cpu->reg.pc+2], cpu->mem.ram[cpu->reg.pc+3]);
+	// 		cpu->reg.pc, cpu->reg.a << 8 | f, bc, de, hl, cpu->reg.sp, cpu->cyc, cpu->mem.ram[cpu->reg.pc], cpu->mem.ram[cpu->reg.pc+1], cpu->mem.ram[cpu->reg.pc+2], cpu->mem.ram[cpu->reg.pc+3]);
 	//
-	
+	//
 	printf("%04X: %02X	", cpu->reg.pc, cpu->opcode);
 	disassemble(cpu->mem.ram, cpu->reg.pc);
 	printf("\n");
-	printf("A=%02X, AF=%04X PSW=%02X, BC=%04X, DE=%04X, HL=%04X, PC=%04X CYC: %d", cpu->reg.a, 
-			cpu->reg.a<<8 | f, cpu->reg.psw, bc, de, hl, cpu->reg.pc, cpu->cyc);
+	printf("A=%02X, AF=%04X BC=%04X, DE=%04X, HL=%04X, PC=%04X CYC: %d", cpu->reg.a, 
+	 		cpu->reg.a<<8 | f, bc, de, hl, cpu->reg.pc, cpu->cyc);
 	printf(" {%c%c%c%c%c} ",  
-			cpu->flag.sign     ? 'S' : '.', 
-			cpu->flag.zero     ? 'Z' : '.', 
-			cpu->flag.aux == 1 ? 'A' : '.', 
-			cpu->flag.parity   ? 'P' : '.', 
-			cpu->flag.carry    ? 'C' : '.');
+	 		cpu->flag.sign     ? 'S' : '.', 
+	 		cpu->flag.zero     ? 'Z' : '.', 
+	 		cpu->flag.aux == 1 ? 'A' : '.', 
+	 		cpu->flag.parity   ? 'P' : '.', 
+	 		cpu->flag.carry    ? 'C' : '.');
 	printf("\n");
 	printf("SP={$%04X stack:[", cpu->reg.sp);
-	// TODO: pushed bytes should have number next to it to indicate how recent it is
 	for (uint16_t i = 0x07BD; i >= cpu->reg.sp && cpu->reg.sp != 0; i--) {
-		printf(" %02X ", cpu->mem.ram[i]);
+	 	printf(" %02X ", cpu->mem.ram[i]);
 	}
 	printf("]}\n");
 }
@@ -267,6 +276,7 @@ void execute(Cpu *cpu) {
 			cpu->flag.aux = ((cpu->reg.b & 0xF) + 1) > 0xF;
 			break;
 		case 0x05:;
+			// FLAG
 			uint8_t res = cpu->reg.b - 1;
 			cpu->flag.sign = check_sign(res);
 			cpu->flag.zero = check_zero(res);
@@ -282,8 +292,6 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = ((cpu->reg.a & 0x80) >> 7) | (cpu->reg.a << 1);
 			cpu->flag.carry = cpu->reg.a & 0x01;
 			break;
-		case 0x08:
-			unimplemented();break;
 		case 0x09: {
 			uint32_t res = bc + hl;
 			cpu->reg.h = res >> 8;
@@ -319,8 +327,6 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = ((cpu->reg.a & 0x01) << 7) | (cpu->reg.a >> 1);
 			cpu->flag.carry = (cpu->reg.a & 0x80) >> 7;
 			break;
-		case 0x10:
-			unimplemented();break;
 		case 0x11:
 			cpu->reg.d = cpu->mem.ram[cpu->reg.pc + 1];
 			cpu->reg.e = cpu->mem.ram[cpu->reg.pc];
@@ -358,8 +364,6 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = (uint8_t)ca & 0xFF;
 			break;
 		}
-		case 0x18:
-			unimplemented();break;
 		case 0x19: {
 			uint32_t res = de + hl;
 			cpu->reg.h = res >> 8;
@@ -400,8 +404,6 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = (uint8_t)(ca) >> 1;
 			break;
 		}
-		case 0x20:
-			unimplemented();break;
 		case 0x21:
 			cpu->reg.h = cpu->mem.ram[cpu->reg.pc + 1];
 			cpu->reg.l = cpu->mem.ram[cpu->reg.pc];
@@ -456,8 +458,6 @@ void execute(Cpu *cpu) {
 			cpu_set_zsp(cpu, cpu->reg.a);
 			break;
 		}
-		case 0x28:
-			unimplemented();break;
 		case 0x29: {
 			uint32_t res = hl + hl;
 			cpu->reg.h = res >> 8;
@@ -497,8 +497,6 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			break;
 		case 0x2F: cpu->reg.a = ~cpu->reg.a; break;
-		case 0x30:
-			unimplemented();break;
 		case 0x31:
 			cpu->reg.sp = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc += 2;
@@ -508,7 +506,8 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc += 2;
 			break;
 		case 0x33:
-			unimplemented();break;
+			cpu->reg.sp += 1;
+			break;
 		case 0x34:
 			cpu->mem.ram[hl]++;
 			cpu_set_zsp(cpu, cpu->mem.ram[hl]);
@@ -524,10 +523,13 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			break;
 		case 0x37: cpu->flag.carry = 1; break;
-		case 0x38:
-			unimplemented();break;
-		case 0x39:
-			unimplemented();break;
+		case 0x39: {
+			uint32_t res = cpu->reg.sp + hl;
+			cpu->reg.h = res >> 8;
+			cpu->reg.l = (res & 0x00FF);
+			cpu->flag.carry = (res & 0xFFFF0000) != 0;
+			break;
+		}
 		case 0x3A: {
 			uint16_t addr = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.a = cpu->mem.ram[addr]; 
@@ -535,7 +537,8 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0x3B:
-			unimplemented();break;
+			cpu->reg.sp -= 1;
+			break;
 		case 0x3C:
 			cpu->reg.a++;
 			cpu->flag.sign = check_sign(cpu->reg.a);
@@ -864,7 +867,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xC7:
-			unimplemented();break;
+			unimplemented();break; // RST 0
 		case 0xC8:
 			if (cpu->flag.zero) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -882,8 +885,6 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xCB:
-			unimplemented();break;
 		case 0xCC:
 			if (cpu->flag.zero) {
 				uint16_t ret_addr = cpu->reg.pc + 2;
@@ -916,7 +917,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xCF:
-			unimplemented();break;
+			unimplemented(); break; // RST 1
 		case 0xD0:
 			if (!cpu->flag.carry) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -936,6 +937,7 @@ void execute(Cpu *cpu) {
 			}
 			break;
 		case 0xD3:
+			cpu->out[cpu->mem.ram[cpu->reg.pc]] = cpu->reg.a;
 			cpu->reg.pc++;
 			break;
 		case 0xD4:
@@ -965,7 +967,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			break;
 		}
-		case 0xD7:
+		case 0xD7: // RST 2
 			unimplemented();break;
 		case 0xD8:
 			if (cpu->flag.carry) {
@@ -973,8 +975,6 @@ void execute(Cpu *cpu) {
 				cpu->reg.sp += 2;
 			}
 			break;
-		case 0xD9:
-			unimplemented();break;
 		case 0xDA:
 			if (cpu->flag.carry) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
@@ -982,7 +982,7 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xDB:
+		case 0xDB: // IN
 			unimplemented();break;
 		case 0xDC:
 			if (cpu->flag.carry) {
@@ -995,8 +995,6 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xDD:
-			unimplemented();break;
 		case 0xDE: {
 			uint8_t res = cpu->reg.a - (cpu->flag.carry + cpu->mem.ram[cpu->reg.pc]);
 			cpu->flag.sign = check_sign(res);
@@ -1028,8 +1026,15 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xE3:
-			unimplemented();break;
+		case 0xE3: {
+			uint8_t tmp1 = cpu->reg.h;
+			uint8_t tmp2 = cpu->reg.l;
+			cpu->reg.h = cpu->mem.ram[cpu->reg.sp+1];
+			cpu->reg.l = cpu->mem.ram[cpu->reg.sp];
+			cpu->mem.ram[cpu->reg.sp+1] = tmp1;
+			cpu->mem.ram[cpu->reg.sp] = tmp2;		
+			break;
+		}
 		case 0xE4:
 			if (!cpu->flag.parity) {
 				uint16_t ret_addr = cpu->reg.pc + 2;
@@ -1059,7 +1064,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xE7:
-			unimplemented();break;
+			unimplemented();break; //  RST 4
 		case 0xE8:
 			if (cpu->flag.parity) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1067,7 +1072,8 @@ void execute(Cpu *cpu) {
 			}
 			break;
 		case 0xE9:
-			unimplemented();break;
+			cpu->reg.pc = hl;
+			break;
 		case 0xEA:
 			if (cpu->flag.parity) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
@@ -1095,8 +1101,6 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xED:
-			unimplemented();break;
 		case 0xEE: {
 			uint8_t res = cpu->reg.a ^ cpu->mem.ram[cpu->reg.pc];
 			cpu->flag.sign = check_sign(res);
@@ -1109,7 +1113,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xEF:
-			unimplemented();break;
+			unimplemented();break; // RST 5
 		case 0xF0:
 			if (!cpu->flag.sign) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1118,9 +1122,14 @@ void execute(Cpu *cpu) {
 			break;
 		case 0xF1:
 			cpu->reg.a = cpu->mem.ram[cpu->reg.sp+1];
-			cpu->reg.psw = cpu->mem.ram[cpu->reg.sp];
+			uint8_t f = cpu->mem.ram[cpu->reg.sp];
+			cpu->flag.sign = (f >> 7) & 0x1;
+			cpu->flag.zero = (f >> 6) & 0x1;
+			cpu->flag.aux = (f >> 4) & 0x1;
+			cpu->flag.parity = (f >> 2) & 0x1;			
+			cpu->flag.carry = (f >> 0) & 0x1;
+
 			cpu->reg.sp += 2;
-			printf("POP PWS: %X\n", cpu->reg.psw);
 			break;
 		case 0xF2:
 			if (cpu->flag.sign == 0) {
@@ -1130,7 +1139,7 @@ void execute(Cpu *cpu) {
 			}
 			break;
 		case 0xF3:
-			unimplemented();break;
+			unimplemented();break; // DI
 		case 0xF4:
 			if (!cpu->flag.sign) {
 				uint16_t ret_addr = cpu->reg.pc + 2;
@@ -1142,12 +1151,19 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xF5:
+		case 0xF5: {
+			uint8_t f = 0;
+			f |= cpu->flag.sign << 7;
+			f |= cpu->flag.zero << 6;
+			f |= cpu->flag.aux << 4;
+			f |= cpu->flag.parity << 2;
+			f |= 1 << 1;
+			f |= cpu->flag.carry << 0;
 			cpu->mem.ram[cpu->reg.sp-1] = cpu->reg.a;
-			cpu->mem.ram[cpu->reg.sp-2] = cpu->reg.psw;
+			cpu->mem.ram[cpu->reg.sp-2] = f;
 			cpu->reg.sp -= 2;
-			printf("PUSH PWS: %X\n", cpu->reg.psw);
 			break;
+		}
 		case 0xF6: {
 			uint8_t res = cpu->reg.a | cpu->mem.ram[cpu->reg.pc];
 			cpu->flag.sign = check_sign(res);
@@ -1160,7 +1176,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xF7:
-			unimplemented();break;
+			unimplemented();break; // RST 6
 		case 0xF8:
 			if (cpu->flag.sign) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1168,7 +1184,8 @@ void execute(Cpu *cpu) {
 			}
 			break;
 		case 0xF9:
-			unimplemented();break;
+			cpu->reg.sp = hl;
+			break;
 		case 0xFA:
 			if (cpu->flag.sign) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
@@ -1176,8 +1193,9 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xFB:
-			unimplemented();break;
+		case 0xFB: // EI
+			cpu->interrupt = true;
+			break;
 		case 0xFC:
 			if (cpu->flag.sign) {
 				uint16_t ret_addr = cpu->reg.pc + 2;
@@ -1189,8 +1207,6 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xFD:
-			unimplemented();break;
 		case 0xFE: {
 			uint8_t res = cpu->reg.a - cpu->mem.ram[cpu->reg.pc];
 			cpu->flag.sign = check_sign(res);
@@ -1202,7 +1218,27 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xFF:
-			unimplemented();break;
+			unimplemented(); break; // RST 7
+
+		case 0x08:
+		case 0x10:
+		case 0x18:
+		case 0x20:
+		case 0x28:
+		case 0x30:
+		case 0x38:
+			break;	// undocumented NOP
+
+		case 0xCB:
+			break; // undocumented JMP
+		
+		case 0xD9:
+			break; // undocumented RET
+
+		case 0xDD:
+		case 0xED:
+		case 0xFD:
+			unimplemented(); break; // undocumented CALL
 	}
 
 	printf("\n");
@@ -1211,7 +1247,8 @@ void execute(Cpu *cpu) {
 int main(int argc, char *argv[]) {
 	Cpu cpu = cpu_new();
 
-	const char *rom = "../cpu_tests/TST8080.COM";
+	// const char *rom = "../cpu_tests/TST8080.COM";
+	const char *rom = "../invaders";
 
 	FILE *fp = fopen(rom, "r");
 	if (fp == NULL) {
@@ -1231,26 +1268,25 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	// if (strcmp(argv[1], "-d") == 0) {
-	// 	for (int i = 0; i < size; i++) {
-	// 		disassemble(memory, &pc);
-	// 	}
-	// }
-	
-	cpu.mem.ram[0x0000] = 0xD3;
-	cpu.mem.ram[0x0001] = 0x00;
-	
-	cpu.mem.ram[0x0005] = 0xD3;
-	cpu.mem.ram[0x0006] = 0x01;
-	cpu.mem.ram[0x0007] = 0xC9;
-
+	// cpu.mem.ram[0x0000] = 0xD3;
+	// cpu.mem.ram[0x0001] = 0x00;
+	// 
+	// cpu.mem.ram[0x0005] = 0xD3;
+	// cpu.mem.ram[0x0006] = 0x01;
+	// cpu.mem.ram[0x0007] = 0xC9;
+	//
 	uint16_t i = 0;
+
 	while (true) {
 		fetch(&cpu);
 		
 		// decode(&cpu);
-
+		
+		// if interrupt is enabled
+			// interrupt_handler();
+		// else {
 		execute(&cpu);
+		// }
 
 // #ifndef TST8080
 // 		 if (cpu.reg.pc == 5) {
@@ -1266,7 +1302,6 @@ int main(int argc, char *argv[]) {
 // 			}
 // 		}
 // #endif
-
 	}
 	
 	fclose(fp);
