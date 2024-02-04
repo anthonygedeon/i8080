@@ -1,16 +1,14 @@
 #include <stdio.h>
+#include <SDL.h>
 // #include <errno.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
 
+#include "constants.h"
 #include "common.h"
 #include "disassembler.h"
-
-#define ROM_ADDRESS  0x0000 
-#define WRAM_ADDRESS 0x2000
-#define VRAM_ADDRESS 0x2400
 
 #define MAX_MEMORY 0x10000
 
@@ -151,6 +149,13 @@ void cpu_set_zsp(Cpu *cpu, uint8_t result) {
 	cpu->flag.parity = check_parity(result);
 }
 
+void cpu_rst(Cpu *cpu, uint16_t val) {
+	cpu->mem.ram[cpu->reg.sp-1] = (cpu->reg.pc >> 8);
+	cpu->mem.ram[cpu->reg.sp-2] = cpu->reg.pc & 0xFF;
+	cpu->reg.sp -= 2;
+	cpu->reg.pc = val << 3;
+}
+
 void cpu_sbb(Cpu *cpu, uint8_t reg) {
 	uint8_t res = cpu->reg.a - (reg + cpu->flag.carry);
 	cpu_set_zsp(cpu, res);
@@ -161,6 +166,7 @@ void cpu_sbb(Cpu *cpu, uint8_t reg) {
 }
 
 void cpu_ana(Cpu *cpu, uint8_t reg) {
+	// FLAG
 	uint8_t res = cpu->reg.a & reg;
 	cpu_set_zsp(cpu, res);
 	cpu->flag.carry = 0;	
@@ -185,6 +191,7 @@ void cpu_sub(Cpu *cpu, uint8_t reg) {
 }
 
 void cpu_xra(Cpu *cpu, uint8_t reg) {
+	// FLAG
 	uint8_t res = cpu->reg.a ^ reg;
 	cpu_set_zsp(cpu, res);
 	cpu->flag.carry = 0;
@@ -275,15 +282,15 @@ void execute(Cpu *cpu) {
 			cpu->flag.parity = check_parity(cpu->reg.b);
 			cpu->flag.aux = ((cpu->reg.b & 0xF) + 1) > 0xF;
 			break;
-		case 0x05:;
-			// FLAG
+		case 0x05: {
 			uint8_t res = cpu->reg.b - 1;
 			cpu->flag.sign = check_sign(res);
 			cpu->flag.zero = check_zero(res);
 			cpu->flag.parity = check_parity(res);
-			cpu->flag.aux = (((cpu->reg.c & 0x0F) + ((~0x01 & 0x0F) + 1)) & 0x10) == 0x10;
+			cpu->flag.aux = (((cpu->reg.b & 0x0F) + ((~0x01 & 0x0F) + 1)) & 0x10) == 0x10;
 			cpu->reg.b = res;
 			break;
+		}
 		case 0x06:
 			cpu->reg.b = cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.pc++;
@@ -313,6 +320,7 @@ void execute(Cpu *cpu) {
 			cpu->flag.aux = ((cpu->reg.c & 0xF) + 1) > 0xF;
 			break;
 		case 0x0D:
+			// FLAG
 			cpu->reg.c--;
 			cpu->flag.sign = check_sign(cpu->reg.c);
 			cpu->flag.zero = check_zero(cpu->reg.c);
@@ -459,6 +467,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0x29: {
+			// FLAG
 			uint32_t res = hl + hl;
 			cpu->reg.h = res >> 8;
 			cpu->reg.l = (res & 0x00FF);
@@ -466,13 +475,12 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0x2A: {
-
 			uint16_t addr = (cpu->mem.ram[cpu->reg.pc + 1] << 8) | cpu->mem.ram[cpu->reg.pc];
 			cpu->reg.h = cpu->mem.ram[addr+1];
 			cpu->reg.l = cpu->mem.ram[addr];
 			cpu->reg.pc += 2;
 			break;
-				   }
+		}
 		case 0x2B:
 			hl -= 1;
 			cpu->reg.h = hl >> 8;
@@ -856,6 +864,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.sp -= 2;
 			break;
 		case 0xC6: {
+			// FLAG
 			uint8_t res = cpu->reg.a + cpu->mem.ram[cpu->reg.pc];
 			cpu->flag.sign = check_sign(res);
 			cpu->flag.zero = check_zero(res);
@@ -866,8 +875,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			break;
 		}
-		case 0xC7:
-			unimplemented();break; // RST 0
+		case 0xC7: cpu_rst(cpu, 0); break; // RST 0
 		case 0xC8:
 			if (cpu->flag.zero) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -897,7 +905,6 @@ void execute(Cpu *cpu) {
 			}
 			break;
 		case 0xCD: {
-			// CALL a16
 			uint16_t ret_addr = cpu->reg.pc + 2;
 			cpu->mem.ram[cpu->reg.sp-1] = (ret_addr >> 8);
 			cpu->mem.ram[cpu->reg.sp-2] = ret_addr & 0xFF;
@@ -916,8 +923,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			break;
 		}
-		case 0xCF:
-			unimplemented(); break; // RST 1
+		case 0xCF: cpu_rst(cpu, 1); break; // RST 1
 		case 0xD0:
 			if (!cpu->flag.carry) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -968,7 +974,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xD7: // RST 2
-			unimplemented();break;
+			cpu_rst(cpu, 2); break; 
 		case 0xD8:
 			if (cpu->flag.carry) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -982,8 +988,7 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xDB: // IN
-			unimplemented();break;
+		case 0xDB: cpu->reg.a = cpu->in[cpu->mem.ram[cpu->reg.pc]]; // IN
 		case 0xDC:
 			if (cpu->flag.carry) {
 				uint16_t ret_addr = cpu->reg.pc + 2;
@@ -1006,8 +1011,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			break;
 		}
-		case 0xDF:
-			unimplemented();break;
+		case 0xDF: cpu_rst(cpu, 3); break; // RST 3
 		case 0xE0:
 			if (cpu->flag.parity == 0) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1052,6 +1056,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.sp -= 2;
 			break;
 		case 0xE6: {
+			// FLAG
 			uint8_t res = cpu->reg.a & cpu->mem.ram[cpu->reg.pc];
 			cpu->flag.sign = check_sign(res);
 			cpu->flag.zero = check_zero(res);
@@ -1063,8 +1068,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			break;
 		}
-		case 0xE7:
-			unimplemented();break; //  RST 4
+		case 0xE7: cpu_rst(cpu, 4); break; //  RST 4
 		case 0xE8:
 			if (cpu->flag.parity) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1113,7 +1117,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xEF:
-			unimplemented();break; // RST 5
+			cpu_rst(cpu, 5); break; // RST 5
 		case 0xF0:
 			if (!cpu->flag.sign) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1138,8 +1142,7 @@ void execute(Cpu *cpu) {
 				cpu->reg.pc += 2;
 			}
 			break;
-		case 0xF3:
-			unimplemented();break; // DI
+		case 0xF3: cpu->interrupt = false; break; // DI
 		case 0xF4:
 			if (!cpu->flag.sign) {
 				uint16_t ret_addr = cpu->reg.pc + 2;
@@ -1176,7 +1179,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xF7:
-			unimplemented();break; // RST 6
+			cpu_rst(cpu, 6); break; // RST 6
 		case 0xF8:
 			if (cpu->flag.sign) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1208,43 +1211,60 @@ void execute(Cpu *cpu) {
 			}
 			break;
 		case 0xFE: {
+			// FLAG
 			uint8_t res = cpu->reg.a - cpu->mem.ram[cpu->reg.pc];
 			cpu->flag.sign = check_sign(res);
 			cpu->flag.zero = check_zero(res);
 			cpu->flag.parity = check_parity(res);
-			cpu->flag.carry = cpu->reg.a < cpu->mem.ram[cpu->reg.pc];
+			// cpu->flag.carry = cpu->reg.a < cpu->mem.ram[cpu->reg.pc];
+			cpu->flag.carry = (uint16_t)(cpu->reg.a) + (uint16_t)(cpu->mem.ram[cpu->reg.pc]) > 0xFF;
 			cpu->flag.aux = (((cpu->reg.a & 0x0F) + ((~cpu->mem.ram[cpu->reg.pc] & 0x0F) + 1)) & 0x10) == 0x10;
 			cpu->reg.pc++;
 			break;
 		}
-		case 0xFF:
-			unimplemented(); break; // RST 7
-
+		case 0xFF: cpu_rst(cpu, 7); break; // RST 7
+		
 		case 0x08:
 		case 0x10:
 		case 0x18:
 		case 0x20:
 		case 0x28:
 		case 0x30:
-		case 0x38:
-			break;	// undocumented NOP
+		case 0x38: break;	// undocumented NOP
 
-		case 0xCB:
-			break; // undocumented JMP
+		case 0xCB: unimplemented(); break; // undocumented JMP
 		
-		case 0xD9:
-			break; // undocumented RET
+		case 0xD9: unimplemented(); break; // undocumented RET
 
 		case 0xDD:
 		case 0xED:
-		case 0xFD:
-			unimplemented(); break; // undocumented CALL
+		case 0xFD: unimplemented(); break; // undocumented CALL
 	}
 
 	printf("\n");
 }
 
 int main(int argc, char *argv[]) {
+	if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
+        printf("SDL_Init Error: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_Window* window = SDL_CreateWindow(GAME_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
+    if (window == NULL) {
+        printf("SDL_CreateWindow Error: %s\n", SDL_GetError());
+        return 1;
+    }
+
+
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (renderer == NULL) {
+        printf("SDL_CreateRenderer Error: %s\n", SDL_GetError());
+        return 1;
+    }
+
+	SDL_RenderSetScale(renderer, SCREEN_WIDTH / 256, SCREEN_HEIGHT / 224);
+
 	Cpu cpu = cpu_new();
 
 	// const char *rom = "../cpu_tests/TST8080.COM";
@@ -1268,16 +1288,19 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	// cpu.mem.ram[0x0000] = 0xD3;
-	// cpu.mem.ram[0x0001] = 0x00;
-	// 
-	// cpu.mem.ram[0x0005] = 0xD3;
-	// cpu.mem.ram[0x0006] = 0x01;
-	// cpu.mem.ram[0x0007] = 0xC9;
-	//
 	uint16_t i = 0;
+	uint8_t video[RESOLUTION] = { 0 };
+	
+	bool is_running = true;
+	while (is_running) {
+		SDL_Event event;
 
-	while (true) {
+		while (SDL_PollEvent(&event)) {
+			if (event.type == SDL_QUIT) {
+				is_running = false;
+			}
+		}
+
 		fetch(&cpu);
 		
 		// decode(&cpu);
@@ -1288,23 +1311,36 @@ int main(int argc, char *argv[]) {
 		execute(&cpu);
 		// }
 
-// #ifndef TST8080
-// 		 if (cpu.reg.pc == 5) {
-// 			if (cpu.reg.c == 2) {
-// 				printf("%c", cpu.reg.e);
-// 			} else if (cpu.reg.c == 9) {
-// 				uint16_t de = (cpu.reg.d << 8) | cpu.reg.e;
-// 				i = de;
-// 				while (cpu.mem.ram[i] != '$') {
-// 					  printf("%c", cpu.mem.ram[i]);
-// 					  i++;
-// 				}
-// 			}
-// 		}
-// #endif
+		// for (int i = 0; i < 256; i++) {
+		// 	for (int j = 0; j < 28; i++) {
+		// 		video[28 * i + j] = 1; 
+		// 	}
+		// }
+
+		SDL_RenderClear(renderer);
+		
+		for (int i = VRAM_ADDRESS; i < 0x3FFF; i++) {
+			// SDL_Rect rect = { .x = j , .y = i, .h = 10, .w = 10};
+
+			// if (cpu.display.fb[i][j] == 1) {
+			// 	SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+			// 	SDL_RenderFillRect(renderer, &rect);
+			// } else if (cpu.display.fb[i][j] == 0) {
+			// 	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+			// 	SDL_RenderFillRect(renderer, &rect);
+			// }
+		}
+
+		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+
+		SDL_RenderPresent(renderer);
+
 	}
 	
 	fclose(fp);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
 
 	return EXIT_SUCCESS;
 }
