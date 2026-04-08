@@ -1,0 +1,1663 @@
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "cpu.h"
+#include "memory.h"
+#include "utils.h"
+
+static void unimplemented(const u16 opcode) {
+    fprintf(stderr, "unimplemented opcode: %02X\n", opcode);
+    exit(1);
+}
+
+// returns if there was a carry between bit "bit_no" and "bit_no - 1" when
+// executing "a + b + cy"
+static inline bool carry(int bit_no, u8 a, u8 b, bool cy) {
+    int16_t result = a + b + cy;
+    int16_t carry = result ^ a ^ b;
+    return carry & (1 << bit_no);
+}
+
+void flag_check_s(i8080 *state, const u16 reg) {
+    state->Flag.s = (reg & 0xff) >> 7;
+}
+
+void flag_check_z(i8080 *state, const u16 reg) { state->Flag.z = reg == 0; }
+
+void flag_check_p(i8080 *state, const u16 reg) {
+    u8 count = 0;
+    for (size_t i = 0; i < 8; i++)
+        count += (reg >> i) & 1;
+    state->Flag.p = (count & 1) == 0;
+}
+
+void flag_check_ac_add(struct i8080 *state, const u8 a, const u8 b,
+                       const u8 carry) {
+    state->Flag.ac = ((a & 0xF) + (b & 0xF) + carry) > 0xF;
+}
+
+void flag_check_ac_sub(struct i8080 *state, u8 a, u8 b, u8 carry) {
+    state->Flag.ac = ((a & 0xF) + ((~b) & 0xF) + !carry) > 0xF;
+}
+
+static void flag_check_szp(i8080 *state, const u16 reg) {
+    flag_check_s(state, reg);
+    flag_check_z(state, reg);
+    flag_check_p(state, reg);
+}
+
+static void hlt(i8080 *state) { state->status = STOPPED; }
+
+static void out(i8080 *state) {
+    state->out[mem_read_byte(state->Register.pc)] = state->Register.a;
+    state->Register.pc++;
+}
+
+static void in(i8080 *state) {
+    state->Register.a = state->in[mem_read_byte(state->Register.pc)];
+    state->Register.pc++;
+}
+
+static inline void nop() {
+    // no-opcode
+}
+
+static void add(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a + reg;
+    flag_check_szp(state, res);
+    state->Flag.ac = carry(4, state->Register.a, reg, 1);
+    state->Flag.cy = ((u16)state->Register.a + (u16)reg) > 0xFF;
+    state->Register.a = res;
+}
+
+static void sub(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a - reg;
+    flag_check_szp(state, res);
+
+    state->Flag.ac = carry(4, state->Register.a, ~reg, 1);
+    state->Flag.cy = carry(8, state->Register.a, ~reg, 1);
+
+    state->Flag.cy = !state->Flag.cy;
+    state->Register.a = res;
+}
+
+static void sbb(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a - reg - state->Flag.cy;
+    flag_check_szp(state, res);
+
+    state->Flag.ac = carry(4, state->Register.a, ~reg, !state->Flag.cy);
+    state->Flag.cy = carry(8, state->Register.a, ~reg, !state->Flag.cy);
+
+    state->Flag.cy = !state->Flag.cy;
+    state->Register.a = res;
+}
+
+static void ana(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a & reg;
+
+    flag_check_szp(state, res);
+
+    state->Flag.ac = ((state->Register.a | reg) & 0x80) != 0;
+
+    state->Flag.cy = 0;
+
+    state->Register.a = res;
+}
+
+static void ani(i8080 *state) {
+    u8 res = state->Register.a & mem_read_byte(state->Register.pc);
+
+    flag_check_szp(state, res);
+
+    state->Flag.ac =
+        ((state->Register.a | mem_read_byte(state->Register.pc)) & 0x08) != 0;
+
+    state->Flag.cy = 0;
+
+    state->Register.a = res;
+
+    state->Register.pc++;
+}
+
+static void xra(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a ^ reg;
+
+    flag_check_szp(state, res);
+
+    state->Flag.ac = 0;
+    state->Flag.cy = 0;
+
+    state->Register.a = res;
+}
+
+static void xri(i8080 *state) {
+    u8 res = state->Register.a ^ mem_read_byte(state->Register.pc);
+    flag_check_szp(state, res);
+    state->Flag.ac = 0;
+    state->Flag.cy = 0;
+    state->Register.a = res;
+    state->Register.pc++;
+}
+
+static void ora(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a | reg;
+
+    flag_check_szp(state, res);
+
+    state->Flag.ac = 0;
+    state->Flag.cy = 0;
+
+    state->Register.a = res;
+}
+
+static void ori(i8080 *state) {
+    u8 res = state->Register.a | mem_read_byte(state->Register.pc);
+
+    flag_check_szp(state, res);
+
+    state->Flag.ac = 0;
+    state->Flag.cy = 0;
+
+    state->Register.a = res;
+
+    state->Register.pc++;
+}
+
+static void cpi(i8080 *state) {
+    u8 d8 = mem_read_byte(state->Register.pc);
+    u16 res = (u16)state->Register.a - (u16)d8;
+
+    flag_check_szp(state, res);
+    state->Flag.ac =
+        carry(4, state->Register.a, ~mem_read_byte(state->Register.pc), 1);
+    state->Flag.cy = state->Register.a < d8;
+
+    state->Register.pc++;
+}
+
+static void cmp(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a - reg;
+
+    flag_check_szp(state, res);
+    state->Flag.cy = carry(8, state->Register.a, ~reg, 1);
+    state->Flag.ac = carry(4, state->Register.a, ~reg, 1);
+    state->Flag.cy = !state->Flag.cy;
+}
+
+static void adc(i8080 *state, const u8 reg) {
+    u8 res = state->Register.a + reg + state->Flag.cy;
+    flag_check_szp(state, res);
+    state->Flag.ac = (state->Register.a ^ res ^ reg) & 0x10;
+    state->Flag.cy =
+        ((u16)state->Register.a + (u16)reg + (u16)state->Flag.cy) > 0xFF;
+    state->Register.a = res;
+}
+
+static void daa(struct i8080 *state) {
+    if ((state->Register.a & 0x0F) > 9 || state->Flag.ac) {
+        flag_check_ac_add(state, state->Register.a, 6, 0);
+        state->Register.a += 0x06;
+    }
+
+    if (((state->Register.a & 0xF0) >> 4) > 9 || state->Flag.cy) {
+        state->Register.a += 0x60;
+        state->Flag.cy = 1;
+    }
+
+    flag_check_szp(state, state->Register.a);
+}
+
+static void lxi_bc(struct i8080 *state, const u16 d16) {
+    state->Register.bc = d16;
+    state->Register.pc += 2;
+}
+
+static void lxi_de(struct i8080 *state, const u16 d16) {
+    state->Register.de = d16;
+    state->Register.pc += 2;
+}
+
+static void lxi_hl(struct i8080 *state, const u16 d16) {
+    state->Register.hl = d16;
+    state->Register.pc += 2;
+}
+
+static void lxi_sp(struct i8080 *state, const u16 d16) {
+    state->Register.sp = d16;
+    state->Register.pc += 2;
+}
+
+static inline void mov(u8 *dest, const u8 src) { *dest = src; }
+
+static void stack_push(i8080 *state, const u8 hi, const u8 lo) {
+    mem_write_byte(state->Register.sp - 1, hi);
+    mem_write_byte(state->Register.sp - 2, lo);
+    state->Register.sp -= 2;
+}
+
+static void stack_pop(i8080 *state, u8 *hi, u8 *lo) {
+    *hi = mem_read_byte(state->Register.sp + 1);
+    *lo = mem_read_byte(state->Register.sp);
+    state->Register.sp += 2;
+}
+
+static inline void jmp(i8080 *state) {
+    state->Register.pc = combine(mem_read_byte(state->Register.pc + 1),
+                                 mem_read_byte(state->Register.pc));
+}
+
+static void call(i8080 *state) {
+    u16 ret = state->Register.pc + 2;
+    stack_push(state, get_hi(ret), get_lo(ret));
+    jmp(state);
+}
+
+static void rst(i8080 *state, u8 nnn) {
+    stack_push(state, state->Register.pc + 1, state->Register.pc);
+    state->Register.pc = nnn << 3;
+}
+
+static void ret(i8080 *state) {
+    u8 lo, hi;
+    stack_pop(state, &hi, &lo);
+    state->Register.pc = combine(hi, lo);
+}
+
+static inline void push_psw(i8080 *state) {
+    state->Register.f = 0;
+    state->Register.f |= state->Flag.s << 7;
+    state->Register.f |= state->Flag.z << 6;
+    state->Register.f |= state->Flag.ac << 4;
+    state->Register.f |= state->Flag.p << 2;
+    state->Register.f |= 1 << 1;
+    state->Register.f |= state->Flag.cy;
+
+    stack_push(state, state->Register.a, state->Register.f);
+}
+
+static inline void pop_psw(i8080 *state) {
+    stack_pop(state, &state->Register.a, &state->Register.f);
+
+    state->Flag.cy = state->Register.f & 0x1;
+    state->Flag.p = (state->Register.f >> 2) & 0x1;
+    state->Flag.ac = (state->Register.f >> 4) & 0x1;
+    state->Flag.z = (state->Register.f >> 6) & 0x1;
+    state->Flag.s = (state->Register.f >> 7) & 0x1;
+}
+
+static void adi(i8080 *state) {
+    u8 res = state->Register.a + mem_read_byte(state->Register.pc);
+    flag_check_szp(state, res);
+    state->Flag.cy = ((u16)state->Register.a +
+                      (u16)mem_read_byte(state->Register.pc)) > 0xFF;
+
+    state->Flag.ac =
+        (state->Register.a ^ res ^ mem_read_byte(state->Register.pc)) & 0x10;
+
+    state->Register.a = res;
+
+    state->Register.pc++;
+}
+
+static void sui(i8080 *state) {
+    u8 res = state->Register.a - mem_read_byte(state->Register.pc);
+    flag_check_szp(state, res);
+
+    state->Flag.ac =
+        carry(4, state->Register.a, ~mem_read_byte(state->Register.pc), 1);
+
+    state->Flag.cy =
+        carry(8, state->Register.a, ~mem_read_byte(state->Register.pc), 1);
+
+    state->Register.a = res;
+
+    state->Flag.cy = !state->Flag.cy;
+    state->Register.pc++;
+}
+
+static void aci(struct i8080 *state) {
+    u8 res =
+        state->Register.a + mem_read_byte(state->Register.pc) + state->Flag.cy;
+
+    flag_check_szp(state, res);
+
+    state->Flag.ac =
+        (state->Register.a ^ res ^ mem_read_byte(state->Register.pc)) & 0x10;
+    state->Flag.cy =
+        ((u16)state->Register.a + (u16)mem_read_byte(state->Register.pc) +
+         (u16)state->Flag.cy) > 0xFF;
+
+    state->Register.a = res;
+
+    state->Register.pc++;
+}
+
+static void sbi(i8080 *state) {
+    u8 res =
+        state->Register.a - mem_read_byte(state->Register.pc) - state->Flag.cy;
+
+    flag_check_szp(state, res);
+
+    state->Flag.ac = carry(4, state->Register.a,
+                           ~mem_read_byte(state->Register.pc), !state->Flag.cy);
+
+    state->Flag.cy = carry(8, state->Register.a,
+                           ~mem_read_byte(state->Register.pc), !state->Flag.cy);
+
+    state->Flag.cy = !state->Flag.cy;
+
+    state->Register.a = res;
+
+    state->Register.pc++;
+}
+
+static void inr_a(struct i8080 *state) {
+    u8 result = state->Register.a + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    state->Register.a = result;
+}
+
+static void dcr_a(struct i8080 *state) {
+    u8 result = state->Register.a - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    state->Register.a = result;
+}
+
+static void inr_b(struct i8080 *state) {
+    u8 result = state->Register.b + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    state->Register.b = result;
+}
+
+static void dcr_b(struct i8080 *state) {
+    u8 result = state->Register.b - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    state->Register.b = result;
+}
+
+static void inr_l(struct i8080 *state) {
+    u8 result = state->Register.l + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    state->Register.l = result;
+}
+
+static void dcr_l(struct i8080 *state) {
+    u8 result = state->Register.l - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    state->Register.l = result;
+}
+
+static void inr_d(struct i8080 *state) {
+    u8 result = state->Register.d + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    state->Register.d = result;
+}
+
+static void inr_h(struct i8080 *state) {
+    u8 result = state->Register.h + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    state->Register.h = result;
+}
+
+static void inr_e(struct i8080 *state) {
+    u8 result = state->Register.e + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    state->Register.e = result;
+}
+
+static void dcr_d(struct i8080 *state) {
+    u8 result = state->Register.d - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    state->Register.d = result;
+}
+
+static void dcr_h(struct i8080 *state) {
+    u8 result = state->Register.h - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    state->Register.h = result;
+}
+
+static void inr_c(struct i8080 *state) {
+    u8 result = state->Register.c + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    state->Register.c = result;
+}
+
+static void dcr_c(struct i8080 *state) {
+    u8 result = state->Register.c - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    state->Register.c = result;
+}
+
+static void dcr_e(struct i8080 *state) {
+    u8 result = state->Register.e - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    state->Register.e = result;
+}
+
+static void inr_m(struct i8080 *state) {
+    u8 result = mem_read_byte(state->Register.hl) + 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = ((result & 0xF) == 0xF);
+    mem_write_byte(state->Register.hl, result);
+}
+
+static void dcr_m(struct i8080 *state) {
+    u8 result = mem_read_byte(state->Register.hl) - 1;
+    flag_check_szp(state, result);
+    state->Flag.ac = !((result & 0xF) == 0xF);
+    mem_write_byte(state->Register.hl, result);
+}
+
+static void dad(struct i8080 *state, const u16 operand) {
+    const u16 res = state->Register.hl + operand;
+    state->Flag.cy = ((u32)state->Register.hl + (u32)operand) > 0xFFFF;
+    state->Register.hl = res;
+}
+
+static void rlc(struct i8080 *state) {
+    u8 msb = (state->Register.a & 0x80) >> 7;
+    state->Register.a <<= 1;
+    state->Register.a |= msb;
+    state->Flag.cy = msb;
+}
+
+static void rrc(struct i8080 *state) {
+    const u8 lsb = (state->Register.a & 0x01);
+    state->Register.a >>= 1;
+    state->Register.a |= lsb << 7;
+    state->Flag.cy = lsb;
+}
+
+static void ral(struct i8080 *state) {
+    u8 old_cy = state->Flag.cy;        // Save the old carry
+    u8 msb = (state->Register.a >> 7); // Get current bit 7
+
+    state->Register.a =
+        (state->Register.a << 1) | old_cy; // Shift and pull in old carry
+    state->Flag.cy = msb;                  // Bit 7 becomes the new carry
+}
+
+static void rar(struct i8080 *state) {
+    u8 old_cy = state->Flag.cy;          // Save the old carry
+    u8 lsb = (state->Register.a & 0x01); // Get current bit 0
+
+    state->Register.a =
+        (state->Register.a >> 1) | (old_cy << 7); // Shift and pull in old carry
+    state->Flag.cy = lsb;                         // Bit 0 becomes the new carry
+}
+
+i8080 i8080_init(void) {
+    i8080 cpu;
+    i8080_reset(&cpu);
+
+    memset(mem, 0, MAX_MEMORY);
+    memset(cpu.in, 0, MAX_PORTS);
+    memset(cpu.out, 0, MAX_PORTS);
+
+    cpu.status = RUNNING;
+
+    return cpu;
+}
+
+void i8080_reset(i8080 *state) {
+    state->status = RUNNING;
+
+    state->cycle = 0;
+
+    state->Register.pc = 0;
+    state->Register.sp = 0;
+
+    state->Register.f = 0x02;
+    state->Register.a = 0;
+    state->Register.bc = 0;
+    state->Register.de = 0;
+    state->Register.hl = 0;
+
+    state->Flag.s = 0;
+    state->Flag.z = 0;
+    state->Flag.p = 0;
+    state->Flag.ac = 0;
+    state->Flag.cy = 0;
+}
+
+uint8_t i8080_fetch(i8080 *state) {
+    return mem_read_byte(state->Register.pc++);
+}
+
+void i8080_decode(i8080 *state, u8 opcode) {
+    u16 address = combine(mem_read_byte(state->Register.pc + 1),
+                          mem_read_byte(state->Register.pc));
+    if (address == 0x06BF)
+        printf("Write to 06BF at PC %04X BYTE: %02X\n", state->Register.pc,
+               mem_read_byte(address));
+
+    switch (opcode) {
+    case 0x00:
+        nop();
+        break; // NOP
+
+    case 0x01: // LXI B, d16
+        lxi_bc(state, combine(mem_read_byte(state->Register.pc + 1),
+                              mem_read_byte(state->Register.pc)));
+        break;
+
+    case 0x02: // STAX B
+        mem_write_byte(state->Register.bc, state->Register.a);
+        break;
+
+    case 0x03: // INX B
+        state->Register.bc++;
+        break;
+
+    case 0x04: // INR B
+        inr_b(state);
+        break;
+
+    case 0x05: // DCR B
+        dcr_b(state);
+        break;
+
+    case 0x06: // MVI B, d8
+        state->Register.b = mem_read_byte(state->Register.pc);
+        state->Register.pc++;
+        break;
+
+    case 0x07: // RLC
+        rlc(state);
+        break;
+
+    case 0x09:
+        dad(state, state->Register.bc);
+        break;
+
+    case 0x0A: // LDAX B
+        state->Register.a = mem_read_word(state->Register.bc);
+        break;
+
+    case 0x0B: // DCX B
+        state->Register.bc -= 1;
+        break;
+
+    case 0x0C: // INR C
+        inr_c(state);
+        break;
+
+    case 0x0D: // DCR C
+        dcr_c(state);
+        break;
+
+    case 0x0E: // MVI C, d8
+        state->Register.c = mem_read_byte(state->Register.pc);
+        state->Register.pc++;
+        break;
+
+    case 0x0F: // RRC
+        rrc(state);
+        break;
+
+    case 0x11: // LXI D, d16
+        lxi_de(state, combine(mem_read_byte(state->Register.pc + 1),
+                              mem_read_byte(state->Register.pc)));
+        break;
+
+    case 0x12: // STAX D
+        mem_write_word(state->Register.de, state->Register.a);
+        break;
+
+    case 0x13: // INX D
+        state->Register.de++;
+        break;
+
+    case 0x14: // INR D
+        inr_d(state);
+        break;
+
+    case 0x15: // DCR D
+        dcr_d(state);
+        break;
+
+    case 0x16: // MVI D,d8
+        state->Register.d = mem_read_byte(state->Register.pc);
+        state->Register.pc++;
+        break;
+
+    case 0x17: // RAL
+        ral(state);
+        break;
+
+    case 0x19: // DAD H
+        dad(state, state->Register.de);
+        break;
+
+    case 0x1A: // LDAX D
+        state->Register.a = mem_read_word(state->Register.de);
+        break;
+
+    case 0x1B: // DCX D
+        state->Register.de--;
+        break;
+
+    case 0x1C: // INR E
+        inr_e(state);
+        break;
+
+    case 0x1D: // DCR E
+        dcr_e(state);
+        break;
+
+    case 0x1E:
+        state->Register.e = mem_read_byte(state->Register.pc);
+        state->Register.pc++;
+        break;
+
+    case 0x1F:
+        rar(state);
+        break;
+
+    case 0x21: // LXI H, d16
+        lxi_hl(state, combine(mem_read_byte(state->Register.pc + 1),
+                              mem_read_byte(state->Register.pc)));
+        break;
+
+    case 0x22: // SHLD a16
+        mem_write_byte(state->Register.pc, state->Register.l);
+        mem_write_byte(state->Register.pc + 1, state->Register.h);
+        state->Register.pc += 2;
+        break;
+
+    case 0x23: // INX H
+        state->Register.hl++;
+        break;
+
+    case 0x24: //  INR H
+        inr_h(state);
+        break;
+
+    case 0x25: // DCR H
+        dcr_h(state);
+        break;
+
+    case 0x26: // MVI H,d8
+        state->Register.h = mem_read_byte(state->Register.pc);
+        state->Register.pc++;
+        break;
+
+    case 0x27:
+        daa(state);
+        break;
+
+    case 0x29: // DAD H
+        dad(state, state->Register.hl);
+        break;
+
+    case 0x2A: // LHLD a16
+        u16 addr = combine(mem_read_byte(state->Register.pc + 1),
+                           mem_read_byte(state->Register.pc));
+        state->Register.l = mem_read_byte(addr);
+        state->Register.h = mem_read_byte(addr + 1);
+        state->Register.pc += 2;
+        break;
+
+    case 0x2B: // DCX H
+        state->Register.hl--;
+        break;
+
+    case 0x2C: // INR L
+        inr_l(state);
+        break;
+
+    case 0x2D: // DCR L
+        dcr_l(state);
+        break;
+
+    case 0x2E: // MVI L,d8
+        state->Register.l = mem_read_byte(state->Register.pc);
+        state->Register.pc++;
+        break;
+
+    case 0x2F: // CMA
+        state->Register.a = ~state->Register.a;
+        break;
+
+    case 0x31: // LXI SP, d16
+        lxi_sp(state, combine(mem_read_byte(state->Register.pc + 1),
+                              mem_read_byte(state->Register.pc)));
+        break;
+
+    case 0x32: // STA a16
+        mem_write_byte(combine(mem_read_byte(state->Register.pc + 1),
+                               mem_read_byte(state->Register.pc)),
+                       state->Register.a);
+        state->Register.pc += 2;
+        break;
+
+    case 0x33: // INX SP
+        state->Register.sp++;
+        break;
+
+    case 0x34: // INR M
+        inr_m(state);
+        break;
+
+    case 0x35: // DCR M
+        dcr_m(state);
+        break;
+
+    case 0x36: // MVI M,d8
+        mem_write_byte(state->Register.hl, mem_read_byte(state->Register.pc));
+        state->Register.pc++;
+        break;
+
+    case 0x37: // STC
+        state->Flag.cy = 1;
+        break;
+
+    case 0x39: { // DAD SP
+        dad(state, state->Register.sp);
+        break;
+
+    case 0x3A: {
+        state->Register.a =
+            mem_read_byte(combine(mem_read_byte(state->Register.pc + 1),
+                                  mem_read_byte(state->Register.pc)));
+        state->Register.pc += 2;
+        break;
+    }
+
+    case 0x3B: // DCX SP
+        state->Register.sp -= 1;
+        break;
+
+    case 0x3C: // INR A
+        inr_a(state);
+        break;
+
+    case 0x3D: // DCR A
+        dcr_a(state);
+        break;
+
+    case 0x3E: // MVI A, d8
+        state->Register.a = mem_read_byte(state->Register.pc);
+        state->Register.pc++;
+        break;
+
+    case 0x3F: // CMC
+        state->Flag.cy = ~state->Flag.cy;
+        break;
+
+    case 0x40: // MOV B, B
+        mov(&state->Register.b, state->Register.b);
+        break;
+
+    case 0x41: // MOV B, C
+        mov(&state->Register.b, state->Register.c);
+        break;
+
+    case 0x42: // MOV B, D
+        mov(&state->Register.b, state->Register.d);
+        break;
+
+    case 0x43: // MOV B, E
+        mov(&state->Register.b, state->Register.e);
+        break;
+
+    case 0x44: // MOV B, H
+        mov(&state->Register.b, state->Register.h);
+        break;
+
+    case 0x45: // MOV B, L
+        mov(&state->Register.b, state->Register.l);
+        break;
+
+    case 0x46: // MOV B, M
+        mov(&state->Register.b, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x47: // MOV B, A
+        mov(&state->Register.b, state->Register.a);
+        break;
+
+    case 0x48: // MOV C, B
+        mov(&state->Register.c, state->Register.b);
+        break;
+
+    case 0x49: // MOV C, C
+        mov(&state->Register.c, state->Register.c);
+        break;
+
+    case 0x4A: // MOV C, D
+        mov(&state->Register.c, state->Register.d);
+        break;
+
+    case 0x4B: // MOV C, E
+        mov(&state->Register.c, state->Register.e);
+        break;
+
+    case 0x4C: // MOV C, H
+        mov(&state->Register.c, state->Register.h);
+        break;
+
+    case 0x4D: // MOV C, L
+        mov(&state->Register.c, state->Register.l);
+        break;
+
+    case 0x4E: // MOV C, M
+        mov(&state->Register.c, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x4F: // MOV C, A
+        mov(&state->Register.c, state->Register.a);
+        break;
+
+    case 0x50: // MOV D, B
+        mov(&state->Register.d, state->Register.b);
+        break;
+
+    case 0x51: // MOV D, C
+        mov(&state->Register.d, state->Register.c);
+        break;
+
+    case 0x52: // MOV D, D
+        mov(&state->Register.d, state->Register.d);
+        break;
+
+    case 0x53: // MOV D, E
+        mov(&state->Register.d, state->Register.e);
+        break;
+
+    case 0x54: // MOV D, H
+        mov(&state->Register.d, state->Register.h);
+        break;
+
+    case 0x55: // MOV D, L
+        mov(&state->Register.d, state->Register.l);
+        break;
+
+    case 0x56: // MOV D, M
+        mov(&state->Register.d, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x57: // MOV D, A
+        mov(&state->Register.d, state->Register.a);
+        break;
+
+    case 0x58: // MOV E, B
+        mov(&state->Register.e, state->Register.b);
+        break;
+
+    case 0x59: // MOV E, C
+        mov(&state->Register.e, state->Register.c);
+        break;
+
+    case 0x5A: // MOV E, D
+        mov(&state->Register.e, state->Register.d);
+        break;
+
+    case 0x5B: // MOV E, E
+        mov(&state->Register.e, state->Register.e);
+        break;
+
+    case 0x5C: // MOV E, H
+        mov(&state->Register.e, state->Register.h);
+        break;
+
+    case 0x5D: // MOV E, L
+        mov(&state->Register.e, state->Register.l);
+        break;
+
+    case 0x5E: // MOV E, M
+        mov(&state->Register.e, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x5F: // MOV E, A
+        mov(&state->Register.e, state->Register.a);
+        break;
+
+    case 0x60: // MOV H, B
+        mov(&state->Register.h, state->Register.b);
+        break;
+
+    case 0x61: // MOV H, C
+        mov(&state->Register.h, state->Register.c);
+        break;
+
+    case 0x62: // MOV H, D
+        mov(&state->Register.h, state->Register.d);
+        break;
+
+    case 0x63: // MOV H, E
+        mov(&state->Register.h, state->Register.e);
+        break;
+
+    case 0x64: // MOV H, H
+        mov(&state->Register.h, state->Register.h);
+        break;
+
+    case 0x65: // MOV H, L
+        mov(&state->Register.h, state->Register.l);
+        break;
+
+    case 0x66: // MOV H, M
+        mov(&state->Register.h, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x67: // MOV H, A
+        mov(&state->Register.h, state->Register.a);
+        break;
+
+    case 0x68: // MOV L, B
+        mov(&state->Register.l, state->Register.b);
+        break;
+
+    case 0x69: // MOV L, C
+        mov(&state->Register.l, state->Register.c);
+        break;
+
+    case 0x6A: // MOV L, D
+        mov(&state->Register.l, state->Register.d);
+        break;
+
+    case 0x6B: // MOV L, E
+        mov(&state->Register.l, state->Register.e);
+        break;
+
+    case 0x6C: // MOV L, H
+        mov(&state->Register.l, state->Register.h);
+        break;
+
+    case 0x6D: // MOV L, L
+        mov(&state->Register.l, state->Register.l);
+        break;
+
+    case 0x6E: // MOV L, M
+        mov(&state->Register.l, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x6F: // MOV L, A
+        mov(&state->Register.l, state->Register.a);
+        break;
+
+    case 0x70: // MOV M, B
+        mem_write_byte(state->Register.hl, state->Register.b);
+        break;
+
+    case 0x71: // MOV M, C
+        mem_write_byte(state->Register.hl, state->Register.c);
+        break;
+
+    case 0x72: // MOV M, D
+        mem_write_byte(state->Register.hl, state->Register.d);
+        break;
+
+    case 0x73: // MOV M, E
+        mem_write_byte(state->Register.hl, state->Register.e);
+        break;
+
+    case 0x74: // MOV M, H
+        mem_write_byte(state->Register.hl, state->Register.h);
+        break;
+
+    case 0x75: // MOV M, L
+        mem_write_byte(state->Register.hl, state->Register.l);
+        break;
+
+    case 0x76: // HLT
+        hlt(state);
+        break;
+
+    case 0x77: // MOV M, A
+        mem_write_byte(state->Register.hl, state->Register.a);
+        break;
+
+    case 0x78: // MOV A, B
+        mov(&state->Register.a, state->Register.b);
+        break;
+
+    case 0x79: // MOV A, C
+        mov(&state->Register.a, state->Register.c);
+        break;
+
+    case 0x7A: // MOV A, D
+        mov(&state->Register.a, state->Register.d);
+        break;
+
+    case 0x7B: // MOV A, E
+        mov(&state->Register.a, state->Register.e);
+        break;
+
+    case 0x7C: // MOV A, H
+        mov(&state->Register.a, state->Register.h);
+        break;
+
+    case 0x7D: // MOV A, L
+        mov(&state->Register.a, state->Register.l);
+        break;
+
+    case 0x7E: // MOV A, M
+        mov(&state->Register.a, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x7F: // MOV A, A
+        mov(&state->Register.a, state->Register.a);
+        break;
+
+    case 0x80: // ADD B
+        add(state, state->Register.b);
+        break;
+
+    case 0x81: // ADD C
+        add(state, state->Register.c);
+        break;
+
+    case 0x82: // ADD D
+        add(state, state->Register.d);
+        break;
+
+    case 0x83: // ADD E
+        add(state, state->Register.e);
+        break;
+
+    case 0x84: // ADD H
+        add(state, state->Register.h);
+        break;
+
+    case 0x85: // ADD L
+        add(state, state->Register.l);
+        break;
+
+    case 0x86: // ADD M
+        add(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x87: // ADD A
+        add(state, state->Register.a);
+        break;
+
+    case 0x88:
+        adc(state, state->Register.b);
+        break;
+
+    case 0x89:
+        adc(state, state->Register.c);
+        break;
+
+    case 0x8A:
+        adc(state, state->Register.d);
+        break;
+
+    case 0x8B:
+        adc(state, state->Register.e);
+        break;
+
+    case 0x8C:
+        adc(state, state->Register.h);
+        break;
+
+    case 0x8D:
+        adc(state, state->Register.l);
+        break;
+
+    case 0x8E:
+        adc(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x8F:
+        adc(state, state->Register.a);
+        break;
+
+    case 0x90: // SUB B
+        sub(state, state->Register.b);
+        break;
+
+    case 0x91: // SUB C
+        sub(state, state->Register.c);
+        break;
+
+    case 0x92: // SUB D
+        sub(state, state->Register.d);
+        break;
+
+    case 0x93: // SUB E
+        sub(state, state->Register.e);
+        break;
+
+    case 0x94: // SUB H
+        sub(state, state->Register.h);
+        break;
+
+    case 0x95: // SUB L
+        sub(state, state->Register.l);
+        break;
+
+    case 0x96: // SUB M
+        sub(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x97: // SUB A
+        sub(state, state->Register.a);
+        break;
+
+    case 0x98:
+        sbb(state, state->Register.b);
+        break;
+
+    case 0x99:
+        sbb(state, state->Register.c);
+        break;
+
+    case 0x9A:
+        sbb(state, state->Register.d);
+        break;
+
+    case 0x9B:
+        sbb(state, state->Register.e);
+        break;
+
+    case 0x9C:
+        sbb(state, state->Register.h);
+        break;
+
+    case 0x9D:
+        sbb(state, state->Register.l);
+        break;
+
+    case 0x9E:
+        sbb(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0x9F:
+        sbb(state, state->Register.a);
+        break;
+
+    case 0xA0: // ANA B
+        ana(state, state->Register.b);
+        break;
+
+    case 0xA1: // ANA C
+        ana(state, state->Register.c);
+        break;
+
+    case 0xA2: // ANA D
+        ana(state, state->Register.d);
+        break;
+
+    case 0xA3: // ANA E
+        ana(state, state->Register.e);
+        break;
+
+    case 0xA4: // ANA H
+        ana(state, state->Register.h);
+        break;
+
+    case 0xA5: // ANA L
+        ana(state, state->Register.l);
+        break;
+
+    case 0xA6: // ANA M
+        ana(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0xA7: // ANA A
+        ana(state, state->Register.a);
+        break;
+
+    case 0xA8:
+        xra(state, state->Register.b);
+        break;
+
+    case 0xA9:
+        xra(state, state->Register.c);
+        break;
+
+    case 0xAA:
+        xra(state, state->Register.d);
+        break;
+
+    case 0xAB:
+        xra(state, state->Register.e);
+        break;
+
+    case 0xAC:
+        xra(state, state->Register.h);
+        break;
+
+    case 0xAD:
+        xra(state, state->Register.l);
+        break;
+
+    case 0xAE:
+        xra(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0xAF:
+        xra(state, state->Register.a);
+        break;
+
+    case 0xB0: // ORA B
+        ora(state, state->Register.b);
+        break;
+
+    case 0xB1: // ORA C
+        ora(state, state->Register.c);
+        break;
+
+    case 0xB2: // ORA D
+        ora(state, state->Register.d);
+        break;
+
+    case 0xB3: // ORA E
+        ora(state, state->Register.e);
+        break;
+
+    case 0xB4: // ORA H
+        ora(state, state->Register.h);
+        break;
+
+    case 0xB5: // ORA L
+        ora(state, state->Register.l);
+        break;
+
+    case 0xB6: // ORA M
+        ora(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0xB7: // ORA A
+        ora(state, state->Register.a);
+        break;
+
+    case 0xB8:
+        cmp(state, state->Register.b);
+        break;
+
+    case 0xB9:
+        cmp(state, state->Register.c);
+        break;
+
+    case 0xBA:
+        cmp(state, state->Register.d);
+        break;
+
+    case 0xBB:
+        cmp(state, state->Register.e);
+        break;
+
+    case 0xBC:
+        cmp(state, state->Register.h);
+        break;
+
+    case 0xBD:
+        cmp(state, state->Register.l);
+        break;
+
+    case 0xBE:
+        cmp(state, mem_read_byte(state->Register.hl));
+        break;
+
+    case 0xBF:
+        cmp(state, state->Register.a);
+        break;
+
+    case 0xC0:
+        if (!state->Flag.z)
+            ret(state);
+        break;
+
+    case 0xC2:
+        if (state->Flag.z == 0)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xC3:
+        jmp(state);
+        break;
+
+    case 0xC4:
+        if (!state->Flag.z)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xC5:
+        stack_push(state, state->Register.b, state->Register.c);
+        break; // PUSH B
+
+    case 0xC6:
+        adi(state);
+        break;
+
+    case 0xC7:
+        rst(state, 0);
+        break;
+
+    case 0xC8:
+        if (state->Flag.z == 1)
+            ret(state);
+        break;
+
+    case 0xC9:
+        ret(state);
+        break;
+
+    case 0xCA:
+        if (state->Flag.z)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xCC:
+        if (state->Flag.z)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xCD:
+        call(state);
+        break;
+
+    case 0xCE:
+        aci(state);
+        break;
+
+    case 0xCF:
+        rst(state, 1);
+        break;
+
+    case 0xD0:
+        if (state->Flag.cy == 0)
+            ret(state);
+        break;
+
+    case 0xD2:
+        if (state->Flag.cy == 0)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xD3:
+        out(state);
+        break;
+
+    case 0xD4:
+        if (state->Flag.cy == 0)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xD5: // PUSH D
+        stack_push(state, state->Register.d, state->Register.e);
+        break;
+
+    case 0xD6:
+        sui(state);
+        break;
+
+    case 0xD7:
+        rst(state, 2);
+        break;
+
+    case 0xD8:
+        if (state->Flag.cy)
+            ret(state);
+        break;
+
+    case 0xDA:
+        if (state->Flag.cy)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xDB:
+        in(state);
+        break;
+
+    case 0xDC:
+        if (state->Flag.cy)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xDE:
+        sbi(state);
+        break;
+
+    case 0xDF:
+        rst(state, 3);
+        break;
+
+    case 0xE0:
+        if (state->Flag.p == 0)
+            ret(state);
+        break;
+
+    case 0xE2:
+        if (state->Flag.p == 0)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xE3: {
+        u8 rl = state->Register.l;
+        state->Register.l = mem_read_byte(state->Register.sp);
+        mem_write_byte(state->Register.sp, rl);
+
+        u8 rh = state->Register.h;
+        state->Register.h = mem_read_byte(state->Register.sp + 1);
+        mem_write_byte(state->Register.sp + 1, rh);
+        break;
+    }
+
+    case 0xE4:
+        if (state->Flag.p == 0)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xE5:
+        stack_push(state, state->Register.h, state->Register.l);
+        break; // PUSH H
+
+    case 0xE6:
+        ani(state);
+        break;
+
+    case 0xE7:
+        rst(state, 4);
+        break;
+
+    case 0xE8:
+        if (state->Flag.p == 1)
+            ret(state);
+        break;
+
+    case 0xE9:
+        state->Register.pc = state->Register.hl;
+        break;
+
+    case 0xEA:
+        if (state->Flag.p == 1)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xEB: {
+        u16 tmp = state->Register.hl;
+        state->Register.hl = state->Register.de;
+        state->Register.de = tmp;
+        break;
+    }
+
+    case 0xEC:
+        if (state->Flag.p == 1)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xEE:
+        xri(state);
+        break;
+
+    case 0xEF:
+        rst(state, 5);
+        break;
+
+    case 0xF0:
+        if (!state->Flag.s)
+            ret(state);
+        break;
+
+    case 0xF2:
+        if (!state->Flag.s)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xF3:
+        state->interrupt = false;
+        break;
+
+    case 0xF4:
+        if (!state->Flag.s)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xF5:
+        push_psw(state);
+        break;
+
+    case 0xF6:
+        ori(state);
+        break;
+
+    case 0xF7:
+        rst(state, 6);
+        break;
+
+    case 0xF8:
+        if (state->Flag.s)
+            ret(state);
+        break;
+
+    case 0xF9:
+        state->Register.sp = state->Register.hl;
+        break;
+
+    case 0xFA:
+        if (state->Flag.s)
+            jmp(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xFB:
+        state->interrupt = true;
+        break;
+
+    case 0xFC:
+        if (state->Flag.s)
+            call(state);
+        else
+            state->Register.pc += 2;
+        break;
+
+    case 0xFE:
+        cpi(state);
+        break;
+
+    case 0xFF:
+        rst(state, 7);
+        break;
+
+    // POP instructions
+    case 0xC1:
+        stack_pop(state, &state->Register.b, &state->Register.c);
+        break; // POP B
+    case 0xD1:
+        stack_pop(state, &state->Register.d, &state->Register.e);
+        break; // POP D
+    case 0xE1:
+        stack_pop(state, &state->Register.h, &state->Register.l);
+        break; // POP H
+    case 0xF1:
+        pop_psw(state);
+        break; // POP PSW
+
+    case 0x08:
+    case 0x10:
+    case 0x18:
+    case 0x20:
+    case 0x28:
+    case 0x30:
+    case 0x38:
+        nop();
+        break; // undocumented NOP
+
+    case 0xCB:
+    case 0xD9:
+    case 0xDD:
+    case 0xED:
+    case 0xFD:
+        unimplemented(opcode);
+        break;
+    }
+    }
+}
+
+void i8080_execute(i8080 *state) {
+    u8 opcode = i8080_fetch(state);
+    i8080_decode(state, opcode);
+}
+
+void i8080_dump(i8080 *state) {
+
+    printf("Opcode: 0x%02X\n", mem_read_byte(state->Register.pc));
+
+    printf("Registers: PC=%04X SP=%04X "
+           "A=%02X BC=%04X DE=%04X HL=%04X\n",
+           state->Register.pc, state->Register.sp, state->Register.a,
+           state->Register.bc, state->Register.de, state->Register.hl);
+
+    printf("Flags: S=%02X Z=%02X AC=%02X "
+           "P=%02X C=%02X\n",
+           state->Flag.s, state->Flag.z, state->Flag.ac, state->Flag.p,
+           state->Flag.cy);
+
+    /* printf("Stack: ["); */
+    /* for (u16 i = 0x07BD; i >= state->Register.sp && state->Register.sp != 0;
+     */
+    /*      i--) { */
+    /*     printf(" %02X ", mem_read_byte(i)); */
+    /* } */
+    /* printf("]\n"); */
+}

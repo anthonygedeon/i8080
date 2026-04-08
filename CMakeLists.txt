@@ -1,32 +1,52 @@
 cmake_minimum_required(VERSION 3.25)
-project(i8080)
 
-# Create an option to switch between a system sdl library and a vendored sdl library
-option(MYGAME_VENDORED "Use vendored libraries" OFF)
-
-set(CMAKE_CXX_FLAGS "-DTST8080")
+# set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(IMGUI_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/externals/imgui)
 
-include_directories(src)
+project(i8080 VERSION 0.0.1)
 
-if(MYGAME_VENDORED)
-    add_subdirectory(vendored/sdl EXCLUDE_FROM_ALL)
-else()
-    # 1. Look for a SDL2 package, 2. look for the SDL2 component and 3. fail if none can be found
-    find_package(SDL2 REQUIRED CONFIG REQUIRED COMPONENTS SDL2)
+# include(${CMAKE_SOURCE_DIR}/cmake/FindSDL2.cmake)
 
-    # 1. Look for a SDL2 package, 2. Look for the SDL2maincomponent and 3. DO NOT fail when SDL2main is not available
-    find_package(SDL2 REQUIRED CONFIG COMPONENTS SDL2main)
-endif()
 
-# Create your game executable target as usual
-add_executable(i8080 src/main.c src/disassembler.c src/common.h)
+include_directories(
+    "${PROJECT_SOURCE_DIR}/externals/imgui"
+)
 
-# SDL2::SDL2main may or may not be available. It is e.g. required by Windows GUI applications
-if(TARGET SDL2::SDL2main)
-    # It has an implicit dependency on SDL2 functions, so it MUST be added before SDL2::SDL2 (or SDL2::SDL2-static)
-    target_link_libraries(i8080 PRIVATE SDL2::SDL2main)
-endif()
+include(FetchContent)
 
-# Link to the actual SDL2 library. SDL2::SDL2 is the shared SDL library, SDL2::SDL2-static is the static SDL libarary.
-target_link_libraries(i8080 PRIVATE SDL2::SDL2)
+FetchContent_Declare(
+	SDL2
+	GIT_REPOSITORY https://github.com/libsdl-org/SDL
+	GIT_TAG release-2.24.0
+	GIT_PROGRESS TRUE
+)
+
+FetchContent_MakeAvailable(SDL2)
+
+# find_package(SDL2)
+find_package(OpenGL)
+
+add_library(imgui
+  ${IMGUI_INCLUDE_DIR}/imgui.cpp 
+  ${IMGUI_INCLUDE_DIR}/imgui_demo.cpp
+  ${IMGUI_INCLUDE_DIR}/imgui_draw.cpp 
+  ${IMGUI_INCLUDE_DIR}/imgui_tables.cpp 
+  ${IMGUI_INCLUDE_DIR}/imgui_widgets.cpp
+  ${IMGUI_INCLUDE_DIR}/misc/cpp/imgui_stdlib.cpp
+  ${IMGUI_INCLUDE_DIR}/backends/imgui_impl_sdl2.cpp
+  ${IMGUI_INCLUDE_DIR}/backends/imgui_impl_sdlrenderer2.cpp)
+
+target_include_directories(imgui PUBLIC ${sdl2_SOURCE_DIRS}/include ${IMGUI_INCLUDE_DIR})
+
+add_executable(${PROJECT_NAME} 
+	${PROJECT_SOURCE_DIR}/src/main.cpp ${PROJECT_SOURCE_DIR}/src/disassembler.cpp)
+
+target_include_directories(${PROJECT_NAME} PUBLIC 
+	${IMGUI_INCLUDE_DIR}/
+	${IMGUI_INCLUDE_DIR}/backends)
+
+target_link_libraries(${PROJECT_NAME} PUBLIC
+	SDL2main SDL2-static	
+	imgui
+	${OPENGL_gl_LIBRARY})

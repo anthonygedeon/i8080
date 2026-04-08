@@ -1,12 +1,16 @@
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
+#include "misc/cpp/imgui_stdlib.h"
 #include "imgui_impl_sdlrenderer2.h"
 #include <SDL_log.h>
 #include <SDL_render.h>
 #include <SDL_stdinc.h>
 #include <SDL_surface.h>
+#include <iostream>
 #include <stdio.h>
 #include <SDL.h>
+#include <string>
+#include <vector>
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <SDL_opengles2.h>
 #else
@@ -22,7 +26,7 @@
 
 #include "constants.h"
 #include "common.h"
-// #include "disassembler.h"
+#include "disassembler.hpp"
 
 #define MAX_MEMORY 0x10000
 
@@ -243,40 +247,6 @@ void cpu_adc(Cpu *cpu, uint8_t reg) {
 	uint8_t res = cpu->reg.a + cpu->reg.a + cpu->flag.carry;
 	cpu_set_zsp(cpu, res);
 	cpu_add(cpu, reg);
-}
-
-void debug_output(Cpu *cpu, uint16_t bc, uint16_t de, uint16_t hl) {
-	uint8_t f = 0;
-	f |= cpu->flag.sign << 7;
-	f |= cpu->flag.zero << 6;
-	f |= cpu->flag.aux << 4;
-	f |= cpu->flag.parity << 2;
-	f |= 1 << 1;
-	f |= cpu->flag.carry << 0;
-
-	 // printf("PC: %.4X, AF: %04X, BC: %.4X, DE: %.4X, HL: %.4X, SP: %.4X\t(%02X %02X %02X %02X)", 
-	 // 		cpu->reg.pc, cpu->reg.a << 8 | f, bc, de, hl, cpu->reg.sp, cpu->mem.ram[cpu->reg.pc], cpu->mem.ram[cpu->reg.pc+1], cpu->mem.ram[cpu->reg.pc+2], cpu->mem.ram[cpu->reg.pc+3]);
-		//
-	// printf("PC: %.4X, AF: %04X, BC: %.4X, DE: %.4X, HL: %.4X, SP: %.4X", 
-	// 		cpu->reg.pc, cpu->reg.a << 8 | f, bc, de, hl, cpu->reg.sp);
-
-	printf("%04X: %02X	", cpu->reg.pc, cpu->opcode);
-	// disassemble(cpu->mem.ram, cpu->reg.pc);
-	printf("\n");
-	printf("A=%02X, AF=%04X BC=%04X, DE=%04X, HL=%04X, PC=%04X CYC: %d", cpu->reg.a, 
-	 		cpu->reg.a<<8 | f, bc, de, hl, cpu->reg.pc, 0);
-	printf(" {%c%c%c%c%c} ",  
-	 		cpu->flag.sign     ? 'S' : '.', 
-	 		cpu->flag.zero     ? 'Z' : '.', 
-	 		cpu->flag.aux == 1 ? 'A' : '.', 
-	 		cpu->flag.parity   ? 'P' : '.', 
-	 		cpu->flag.carry    ? 'C' : '.');
-	printf("\n");
-	printf("SP={$%04X stack:[", cpu->reg.sp);
-	for (uint16_t i = 0x2400; i >= cpu->reg.sp && cpu->reg.sp != 0; i--) {
-	 	printf(" %02X ", cpu->mem.ram[i]);
-	}
-	printf("]}\n");
 }
 
 void execute(Cpu *cpu) {
@@ -937,7 +907,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = res;
 			cpu->reg.pc++;
 			}break;
-		case 0xCF: cpu_rst(cpu, 1); break; // RST 1
+		case 0xCF: cpu_rst(cpu, 0x08); break; // RST 1
 		case 0xD0:
 			if (!cpu->flag.carry) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -987,7 +957,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			}break;
 		case 0xD7: // RST 2
-			cpu_rst(cpu, 2); break; 
+			cpu_rst(cpu, 0x10); break; 
 		case 0xD8:
 			if (cpu->flag.carry) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1023,7 +993,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = res;
 			cpu->reg.pc++;
 			}break;
-		case 0xDF: cpu_rst(cpu, 3); break; // RST 3
+		case 0xDF: cpu_rst(cpu, 0x18); break; // RST 3
 		case 0xE0:
 			if (cpu->flag.parity == 0) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1075,7 +1045,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.a = res;
 			cpu->reg.pc++;
 			}break;
-		case 0xE7: cpu_rst(cpu, 4); break; //  RST 4
+		case 0xE7: cpu_rst(cpu, 0x20); break; //  RST 4
 		case 0xE8:
 			if (cpu->flag.parity) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1122,7 +1092,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 			}break;
 		case 0xEF:
-			cpu_rst(cpu, 5); break; // RST 5
+			cpu_rst(cpu, 0x28); break; // RST 5
 		case 0xF0:
 			if (!cpu->flag.sign) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1186,7 +1156,7 @@ void execute(Cpu *cpu) {
 			break;
 		}
 		case 0xF7:
-			cpu_rst(cpu, 6); break; // RST 6
+			cpu_rst(cpu, 0x30); break; // RST 6
 		case 0xF8:
 			if (cpu->flag.sign) {
 				cpu->reg.pc = (cpu->mem.ram[cpu->reg.sp+1] << 8) | cpu->mem.ram[cpu->reg.sp];
@@ -1226,7 +1196,7 @@ void execute(Cpu *cpu) {
 			cpu->reg.pc++;
 		}
 			break;
-		case 0xFF: cpu_rst(cpu, 7); break; // RST 7
+		case 0xFF: cpu_rst(cpu, 0x38); break; // RST 7
 		
 		case 0x08:
 		case 0x10:
@@ -1284,9 +1254,9 @@ int main(int argc, char *argv[]) {
 	Cpu cpu = cpu_new();
 
 	// const char *rom = "../cpu_tests/TST8080.COM";
-	const char *rom = "../invaders";
+	const char *rom = "../invaders.rom";
 
-	FILE *fp = fopen(rom, "r");
+	FILE *fp = fopen(rom, "rb");
 	if (fp == NULL) {
 		return EXIT_FAILURE;
 	}
@@ -1303,6 +1273,8 @@ int main(int argc, char *argv[]) {
 			printf("Error reading %s: unexpected eof\n", rom);
 		}
 	}
+	cpu.mem.ram[0x1BF4] = 0x70;
+	cpu.mem.ram[0x1BF5] = 0x05;
 	
 	uint8_t video[GAME_HEIGHT][GAME_WIDTH][4] = { 0 };
 	SDL_Texture *texture = SDL_CreateTexture(renderer, 
@@ -1319,7 +1291,18 @@ int main(int argc, char *argv[]) {
 	 // Our state
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
+	int pitch = 0;
+	void* pixels = NULL;
 	bool is_running = true;
+
+	bool debug_reset = false;
+	bool debug_run   = false;
+	bool debug_step  = false;
+	std::string goto_offset;
+	uint16_t address{ 0 };
+
+	float emulation_speed = 1.0;
+
 	while (is_running) {
 		SDL_Event event;
 
@@ -1337,59 +1320,69 @@ int main(int argc, char *argv[]) {
 		ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
+		
+		if (debug_step || debug_run) {
+			fetch(&cpu);
+			
+			// decode(&cpu);
+			
+			// if interrupt is enabled
+				// interrupt_handler();
+			// else {
+			execute(&cpu);
+			// }
+			debug_step = false;
+		}
 
-		fetch(&cpu);
-		
-		// decode(&cpu);
-		
-		// if interrupt is enabled
-			// interrupt_handler();
-		// else {
-		execute(&cpu);
-		// }
-			//
-		 // for (uint16_t i = 0; i < 0x1c00; i++) {
-   //      uint8_t byte = cpu.mem.ram[i + VRAM_ADDRESS];
-			//
-   //      for(int bit = 0; bit < 8; bit++) {
-   //          int x = 255 - ((i * 8) % 256 + bit); //implicit rotation between
-   //          int y = i * 8 / 256; //buffer and texture
-			//
-   //          if (
-   //                  x >= SCREEN_HEIGHT ||
-   //                  y >= SCREEN_WIDTH ||
-   //                  x < 0 ||
-   //                  y < 0
-   //                  ) {
-   //              printf("Tried to draw outside pixel buffer");
-   //              exit(1);
-   //          }
-			//
-   //          uint8_t r = 0;
-   //          uint8_t g = 0;
-   //          uint8_t b = 0;
-			//
-   //          if ((byte >> bit) & 0x01) { //reverse bitshift??
-   //              if (x >= 184 && (x < 240 || (y >=16 && y < 134))) {
-   //                  g = 255;
-   //              } else if (x >= 32 && x < 64) {
-   //                  r = 255;
-   //              } else {
-   //                  r = 255;
-   //                  g = 255;
-   //                  b = 255;
-   //              }
-   //          }
-			//
-			// // printf("R: %X G: %X B: %X\n", r, g, b);
-			//
-   //          video[x][y][0] = r;
-   //          video[x][y][1] = g;
-   //          video[x][y][2] = b;
-   //          video[x][y][3] = 255;//offload?
-   //      }
-   //  }
-   //
+		 for (uint16_t i = 0; i < 0x1c00; i++) {
+        uint8_t byte = cpu.mem.ram[i + VRAM_ADDRESS];
+
+        for(int bit = 0; bit < 8; bit++) {
+            int x = 255 - ((i * 8) % 256 + bit); //implicit rotation between
+            int y = i * 8 / 256; //buffer and texture
+
+            if (
+                    x >= SCREEN_HEIGHT ||
+                    y >= SCREEN_WIDTH ||
+                    x < 0 ||
+                    y < 0
+                    ) {
+                printf("Tried to draw outside pixel buffer");
+                exit(1);
+            }
+
+            uint8_t r = 0;
+            uint8_t g = 0;
+            uint8_t b = 0;
+
+            if ((byte >> bit) & 0x01) { //reverse bitshift??
+                if (x >= 184 && (x < 240 || (y >=16 && y < 134))) {
+                    g = 255;
+                } else if (x >= 32 && x < 64) {
+                    r = 255;
+                } else {
+                    r = 255;
+                    g = 255;
+                    b = 255;
+                }
+            }
+
+			// printf("R: %X G: %X B: %X\n", r, g, b);
+
+            video[x][y][0] = r;
+            video[x][y][1] = g;
+            video[x][y][2] = b;
+            video[x][y][3] = 255;//offload?
+        }
+    }
+
+	  if (SDL_LockTexture(texture, NULL, &pixels, &pitch) != 0) {
+		SDL_Log("Unable to lock texture: %s", SDL_GetError());
+	  } else {
+		memcpy(pixels, video, pitch * 100);
+	  }
+	  SDL_UnlockTexture(texture);
+
 		ImGui::ShowDemoWindow();
 
 		if (ImGui::BeginMainMenuBar()) {
@@ -1397,18 +1390,177 @@ int main(int argc, char *argv[]) {
 
 				ImGui::EndMenu();
 			}
+
+			if (ImGui::BeginMenu("Tools")) {
+
+				ImGui::EndMenu();
+			}
+
+			if (ImGui::BeginMenu("Help")) {
+
+				ImGui::EndMenu();
+			}
 			ImGui::EndMainMenuBar();
+		}
+
+		if (ImGui::Begin("Dissassembly", 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse)) { 
+
+			ImGui::BeginChild("##simulation", ImVec2(0.0, ImGui::GetFrameHeightWithSpacing()));
+				if (ImGui::Button("Reset")) {
+					cpu = cpu_new();
+					load_memory(&cpu.mem, ARRAY_SIZE(bytes), bytes);
+					debug_run = false;	
+				}
+
+				ImGui::SameLine(); 
+
+				if (ImGui::Button("Step")) {
+					debug_step = true;
+				}
+
+				ImGui::SameLine(); 
+
+				if (ImGui::Button("Pause")) {
+					debug_run = false;	
+				}
+
+				ImGui::SameLine(); 
+				if (ImGui::Button("Run")) {
+					debug_run = !debug_run;
+				}
+			ImGui::EndChild();
+
+			ImGui::Separator();
+
+			int column_count = 1;
+			if (ImGui::BeginTable("instructions", 1, 
+				ImGuiTableFlags_NoHostExtendX  | ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg,
+				ImVec2(0.0f, 0.0f))) {
+
+				ImGui::TableSetupColumn("instruction_table", 
+						ImGuiTableColumnFlags_WidthFixed | 
+						ImGuiTableColumnFlags_NoHide | 
+						ImGuiTableColumnFlags_NoReorder, 
+						ImGui::GetWindowWidth());
+
+				ImGuiListClipper clipper;
+				clipper.Begin(ARRAY_SIZE(bytes), ImGui::GetTextLineHeight());
+				while (clipper.Step()) {
+					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+						uint16_t row_numbers = row * column_count;
+						
+						ImGui::SetScrollY((cpu.reg.pc * ImGui::GetTextLineHeight()) - (ImGui::GetTextLineHeight() * 30));
+						
+						ImGui::TableNextRow();
+
+						ImGui::TableSetColumnIndex(0);
+						ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(128, 128, 128, 255));
+						ImGui::Text("%04X", row); ImGui::SameLine();
+						ImGui::PopStyleColor();
+						ImGui::Text("%s", disassembly[cpu.mem.ram[row]].c_str());
+
+						if (cpu.reg.pc == row) {
+							ImU32 cell_bg_color = ImGui::GetColorU32(ImVec4(0.3f, 0.3f, 0.7f, 0.65f));
+							ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, cell_bg_color);
+						}
+					}
+				}
+				clipper.End();
+				ImGui::EndTable();
+			}
+
+			ImGui::End();
+		}
+
+		if (ImGui::Begin("Emulator", 0, ImGuiWindowFlags_NoCollapse)) {
+			ImGui::AlignTextToFramePadding();
+			ImGui::Text("Speed: "); ImGui::SameLine();
+			ImGui::SliderFloat("##", &emulation_speed, 0.1, 1.0);
+			ImGui::Text("Clock speed:  %d", 0);
+			ImGui::Text("total cycles: %d", cpu.cyc);
+			ImGui::End();
+		}
+
+		if (ImGui::Begin("Cpu", 0, ImGuiWindowFlags_NoCollapse)) {
+			uint16_t bc = (cpu.reg.b << 8) | cpu.reg.c;
+			uint16_t de = (cpu.reg.d << 8) | cpu.reg.e;
+			uint16_t hl = (cpu.reg.h << 8) | cpu.reg.l;
+
+			uint8_t f = 0;
+			f |= cpu.flag.sign << 7;
+			f |= cpu.flag.zero << 6;
+			f |= cpu.flag.aux << 4;
+			f |= cpu.flag.parity << 2;
+			f |= 1 << 1;
+			f |= cpu.flag.carry << 0;
+
+			ImGui::Text("PC: $%04X", cpu.reg.pc);
+			ImGui::Text("SP: $%04X", cpu.reg.sp);
+
+			ImGui::Separator();
+
+			ImGui::Text("Flags");
+
+			bool flag_s = cpu.flag.sign;
+			ImGui::Checkbox("S", &flag_s);
+			ImGui::SameLine();
+
+			bool flag_z = cpu.flag.zero;
+			ImGui::Checkbox("Z", &flag_z);
+			ImGui::SameLine();
+
+			bool flag_a = cpu.flag.aux == 1;
+			ImGui::Checkbox("A", &flag_a);
+			ImGui::SameLine();
+
+			bool flag_p = cpu.flag.parity;
+			ImGui::Checkbox("P", &flag_p);
+			ImGui::SameLine();
+
+			bool flag_c = cpu.flag.carry;
+			ImGui::Checkbox("C", &flag_c);
+
+			ImGui::Separator();
+
+			ImGui::Text("Registers");
+			ImGui::Text("A: $%02X", cpu.reg.a);
+			ImGui::Text("B: $%02X", cpu.reg.b);
+			ImGui::Text("C: $%02X", cpu.reg.c);
+			ImGui::Text("D: $%02X", cpu.reg.d);
+			ImGui::Text("E: $%02X", cpu.reg.e);
+			ImGui::Text("H: $%02X", cpu.reg.h);
+			ImGui::Text("L: $%02X", cpu.reg.e);
+			ImGui::Text("F: $%02X", f);
+
+
+			ImGui::End();
+		}
+
+		if (ImGui::Begin("Screen", 0, ImGuiWindowFlags_NoCollapse)) {
+			ImGui::Image(texture, ImVec2(ImGui::GetWindowWidth(), 320));
+			ImGui::End();
+		}
+
+		if (ImGui::Begin("Sound", 0, ImGuiWindowFlags_NoCollapse)) {
+			static float arr[] = { 0.6f, 0.1f, 1.0f, 0.5f, 0.92f, 0.1f, 0.2f };
+			struct Funcs
+        {
+            static float Sin(void*, int i) { return sinf(i * 0.1f); }
+            static float Saw(void*, int i) { return (i & 1) ? 1.0f : -1.0f; }
+        };
+			static int func_type = 0;
+			 float (*func)(void*, int) = (func_type == 0) ? Funcs::Sin : Funcs::Saw;
+        ImGui::PlotLines("##", func, NULL, 70, 0, NULL, -1.0f, 1.0f, ImVec2(ImGui::GetWindowWidth(), 120));
+			ImGui::End();
 		}
 
 		if (ImGui::Begin("Memory", 0, ImGuiWindowFlags_NoCollapse)) {
 			
-			char address_scrollY[5];
-			int column_count = 16;
 			bool tracking_is_enabled = true;
+			int column_count = 16;
 
-			// ImGui::BeginChild("memory_child", ImVec2(ImGui::GetContentRegionAvail().x, 260));
 			if (ImGui::BeginTable("Column_headers", 18, 
-						ImGuiTableFlags_NoHostExtendX, 
+						ImGuiTableFlags_NoHostExtendX | ImGuiTableFlags_ScrollY,
 						ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * 16))) {
 
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed | 
@@ -1420,7 +1572,8 @@ int main(int argc, char *argv[]) {
 					snprintf(buffer, 3, "%02X", header_num);
 					ImGui::TableSetupColumn(buffer, ImGuiTableColumnFlags_WidthFixed);
 				}
-
+				ImGui::TableSetupScrollFreeze(0, 1);
+				
 				ImGui::TableSetupColumn("ascii_header", 
 						ImGuiTableColumnFlags_WidthStretch  | 
 						ImGuiTableColumnFlags_NoHide | 
@@ -1436,6 +1589,15 @@ int main(int argc, char *argv[]) {
 				while (clipper.Step()) {
 					for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
 						uint16_t row_numbers = row * column_count;
+
+
+						// enables autoscroll
+						if (goto_offset.size() != 0) {
+							address	= std::stoi(goto_offset, 0, 16);
+						}
+						if (io.WantTextInput) {
+							ImGui::SetScrollY(address * ImGui::GetTextLineHeight());
+						}
 						
 						ImGui::TableNextRow();
 						ImGui::TableSetColumnIndex(0);
@@ -1466,8 +1628,6 @@ int main(int argc, char *argv[]) {
 
 							row_numbers++;
 						}
-						// ImGui::SetScrollHereY(0x01AA * 0.0f);
-						// ImGui::PopID();
 
 					}
 				}
@@ -1475,15 +1635,16 @@ int main(int argc, char *argv[]) {
 				ImGui::EndTable();
 			}
 
-			// ImGui::EndChild();
-
 			ImGui::Separator();
 			
 			ImGui::BeginChild("memory_selector", ImVec2(0, 0));
 				ImGui::AlignTextToFramePadding();
-				ImGui::Text("Addr:"); ImGui::SameLine();
+				ImGui::Button("Options"); ImGui::SameLine();
+				ImGui::Text("Range %04X..%04lX ", 0000, ARRAY_SIZE(cpu.mem.ram)); 
+				ImGui::SameLine();
 				ImGui::PushItemWidth(40);
-				ImGui::InputText(" ", address_scrollY, ARRAY_SIZE(address_scrollY));
+				ImGui::InputText("##goto", &goto_offset, 
+						ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_CharsUppercase);
 				ImGui::PopItemWidth();
 			ImGui::EndChild();
 
