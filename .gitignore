@@ -1,4 +1,6 @@
 build/
 cpu_tests/
 
+roms/invaders*
+
 .cache/
