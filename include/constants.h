@@ -1,0 +1,16 @@
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
+
+#define GAME_TITLE "Space Invaders"
+
+#define SCREEN_WIDTH 1280
+#define SCREEN_HEIGHT 720
+#define GAME_WIDTH 224
+#define GAME_HEIGHT 256
+#define RESOLUTION GAME_WIDTH * GAME_HEIGHT
+
+#define ROM_ADDRESS  0x0000 
+#define WRAM_ADDRESS 0x2000
+#define VRAM_ADDRESS 0x2400
+
+#endif
