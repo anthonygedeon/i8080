@@ -4,3 +4,4 @@ cpu_tests/
 roms/invaders*
 
 .cache/
+imgui.ini
