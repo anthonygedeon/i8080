@@ -765,8 +765,8 @@ void i8080_decode(i8080 *state, u8 opcode)
     dcr_c(state);
     break;
 
-  case 0x0E: // MVI C, d8
-    state->Register.c = mem_read_byte(state->Register.pc);
+  case 0x0E: // MVI C, d8 
+    state->Register.c = mem_read_byte(state->Register.pc); // Mem -> 0E 04 00 00 00 00 ...
     state->Register.pc++;
     break;
 
